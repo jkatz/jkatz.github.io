@@ -1,0 +1,65 @@
+title = "Jonathan Katz"
+author = "Jonathan Katz"
+copyright = "{{ YEAR }} Jonathan Katz"
+description = ""
+profilePicture = "images/profile.png"
+keywords = ""
+favicon = "favicons/"
+# example ["css/custom.css"]
+customCss = []
+# example ["js/custom.js"]
+customJs = []
+mainSections = ["post"]
+images = []
+doNotLoadAnimations = false
+# Form Spree Contact Form
+#contactFormAction = "https://formspree.io/f/your-form-hash-here"
+# Google Fonts
+#googleFonts = ["Indie+Flower", "Roboto:ital,wght@0,100;0,400;0,700;1,400"]
+# Google Site Verify
+#googleSiteVerify = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+gtagId = "G-NNLWC1035Y"
+singleDateFormat = "Mon, Jan 2, 2006"
+indexDateFormat = "Mon, Jan 2, 2006"
+listDateFormat = "Mon, Jan 2, 2006"
+# Commento Comments
+# CommentoURL = "https://commento.example.com/js/commento.js"
+# Read More links for truncated summaries
+# readMore = true
+# postSectionName = "blog"
+
+# allow for all of the content to be available in the RSS fed
+rssFullContent = true
+
+reversepagetitle = true # When set to 'true', the Window Title will be reversed to 'Title | Author' instead of the default 'Author | Title'
+
+[simpleAnalytics]
+# enable = true
+# customurl = "https://analytics.example.com"
+
+## Math settings
+[math]
+enable = false  # options: true, false. Enable math support globally, default: false. You can always enable math on per page.
+use = "katex"  # options: "katex", "mathjax". default is "katex".
+
+## Social links
+# use 'fab' when brand icons, use 'fas' when standard solid icons.
+[[socialIcons]]
+icon = "fab fa-twitter"
+title = "Twitter"
+url = "https://www.twitter.com/jkatz05"
+
+[[socialIcons]]
+icon = "fab fa-linkedin"
+title = "Linkedin"
+url = "https://www.linkedin.com/in/jonathan-katz-6495532/"
+
+[[socialIcons]]
+icon = "fab fa-github"
+title = "GitHub"
+url = "https://github.com/jkatz/"
+
+[[socialIcons]]
+icon = "fas fa-envelope"
+title = "e-mail"
+url = "mailto:jkatz05@jkatz05.com"
