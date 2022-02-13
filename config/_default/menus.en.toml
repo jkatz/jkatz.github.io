@@ -23,7 +23,12 @@
   url = "/about/"
 
   [[footer]]
+  name = "Opinions are my own."
+  weight = 20
+  identifier = "opinions"
+
+  [[footer]]
   name = "Powered by the Anatole Hugo Theme"
-  weight = 1
+  weight = 10
   identifier = "https://github.com/lxndrblz/anatole"
   url = "https://github.com/lxndrblz/anatole"
