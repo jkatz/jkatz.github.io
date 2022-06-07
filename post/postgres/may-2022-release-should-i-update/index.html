@@ -1,0 +1,135 @@
+<!doctype html><html dir=ltr lang=en data-theme><head><title>Notes on updating to PostgreSQL 14.3, 13.7, 12.11, 11.16, and 10.21 |
+Jonathan Katz</title><meta charset=utf-8><meta name=generator content="Hugo 0.100.1"><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name=description content="
+      This PostgreSQL update release has some issues that could impact you. Learn what they are and if you should update.
+
+
+    "><link rel=stylesheet href=/css/main.min.861c630407a306e1a79890bffbab9b381c5a0b03cd0c3b79755cc5eeea04b6b0.css integrity="sha256-hhxjBAejBuGnmJC/+6ubOBxaCwPNDDt5dVzF7uoEtrA=" crossorigin=anonymous type=text/css><link rel=stylesheet href=/css/markupHighlight.min.058b31f17db60602cc415fd63b0427e7932fbf35c70d8e341a4c39385f5f6f3e.css integrity="sha256-BYsx8X22BgLMQV/WOwQn55MvvzXHDY40Gkw5OF9fbz4=" crossorigin=anonymous type=text/css><link rel=stylesheet href=https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.1/css/all.min.css integrity="sha512-+4zCK9k+qNFUR5X+cKL9EIR+ZOhtIloNl9GIKS57V1MyNsYpYcUrUeQc9vNfzsWfV28IaLL3i96P9sdNyeRssA==" crossorigin=anonymous><link rel="shortcut icon" href=/favicons/favicon.ico type=image/x-icon><link rel=apple-touch-icon sizes=180x180 href=/favicons/apple-touch-icon.png><link rel=icon type=image/png sizes=32x32 href=/favicons/favicon-32x32.png><link rel=icon type=image/png sizes=16x16 href=/favicons/favicon-16x16.png><link rel=canonical href=https://jkatz.github.io/post/postgres/may-2022-release-should-i-update/><script type=text/javascript src=/js/anatole-header.min.8601006ef4e994296e09cf6c0c673f7d9efd4d82b4f620a233474357c6349ca7.js integrity="sha256-hgEAbvTplCluCc9sDGc/fZ79TYK09iCiM0dDV8Y0nKc=" crossorigin=anonymous></script>
+<script type=text/javascript src=/js/anatole-theme-switcher.min.3af0074543322de56d646c828ee14178d034145db4f1f64062c41b8b9f69fb33.js integrity="sha256-OvAHRUMyLeVtZGyCjuFBeNA0FF208fZAYsQbi59p+zM=" crossorigin=anonymous></script><meta name=twitter:card content="summary"><meta name=twitter:title content="Notes on updating to PostgreSQL 14.3, 13.7, 12.11, 11.16, and 10.21"><meta name=twitter:description content="This PostgreSQL update release has some issues that could impact you. Learn what they are and if you should update."><script type=application/ld+json>{"@context":"http://schema.org","@type":"BlogPosting","articleSection":"post","name":"Notes on updating to PostgreSQL 14.3, 13.7, 12.11, 11.16, and 10.21","headline":"Notes on updating to PostgreSQL 14.3, 13.7, 12.11, 11.16, and 10.21","alternativeHeadline":"","description":"
+      This PostgreSQL update release has some issues that could impact you. Learn what they are and if you should update.
+
+
+    ","inLanguage":"en","isFamilyFriendly":"true","mainEntityOfPage":{"@type":"WebPage","@id":"https:\/\/jkatz.github.io\/post\/postgres\/may-2022-release-should-i-update\/"},"author":{"@type":"Person","name":"Jonathan Katz"},"creator":{"@type":"Person","name":"Jonathan Katz"},"accountablePerson":{"@type":"Person","name":"Jonathan Katz"},"copyrightHolder":{"@type":"Person","name":"Jonathan Katz"},"copyrightYear":"2022","dateCreated":"2022-06-07T00:00:00.00Z","datePublished":"2022-06-07T00:00:00.00Z","dateModified":"2022-06-07T00:00:00.00Z","publisher":{"@type":"Organization","name":"Jonathan Katz","url":"https://jkatz.github.io","logo":{"@type":"ImageObject","url":"https:\/\/jkatz.github.io\/favicons\/favicon-32x32.png","width":"32","height":"32"}},"image":[],"url":"https:\/\/jkatz.github.io\/post\/postgres\/may-2022-release-should-i-update\/","wordCount":"1258","genre":[],"keywords":["postgres","postgreql"]}</script></head><body><header><div class="page-top
+animated fadeInDown"><a role=button class=navbar-burger data-target=navMenu aria-label=menu aria-expanded=false><span aria-hidden=true></span>
+<span aria-hidden=true></span>
+<span aria-hidden=true></span></a><nav><ul class=nav__list id=navMenu><div class=nav__links><li><a href=/ title>Home</a></li><li><a href=/post/ title>Posts</a></li><li><a href=/talks/ title>Talks</a></li><li><a href=/about/ title>About</a></li></div><ul><li><a class=theme-switch title="Switch Theme"><i class="fas fa-adjust fa-fw" aria-hidden=true></i></a></li></ul></ul></nav></div></header><div class=wrapper><aside><div class="sidebar
+animated fadeInDown"><div class=sidebar__content><div class=logo-title><div class=title><img src=/images/profile.png alt="profile picture"><h3 title><a href=/>Jonathan Katz</a></h3><div class=description><p></p></div></div></div><ul class=social-links><li><a href=https://www.twitter.com/jkatz05 rel=me aria-label=Twitter title=Twitter><i class="fab fa-twitter fa-2x" aria-hidden=true></i></a></li><li><a href=https://www.linkedin.com/in/jonathan-katz-6495532/ rel=me aria-label=Linkedin title=Linkedin><i class="fab fa-linkedin fa-2x" aria-hidden=true></i></a></li><li><a href=https://github.com/jkatz/ rel=me aria-label=GitHub title=GitHub><i class="fab fa-github fa-2x" aria-hidden=true></i></a></li><li><a href=mailto:jkatz05@jkatz05.com rel=me aria-label=e-mail title=e-mail><i class="fas fa-envelope fa-2x" aria-hidden=true></i></a></li></ul></div><footer class="footer footer--sidebar"><div class=by_farbox><ul class=footer__list><li class=footer__item>&copy;
+2022 Jonathan Katz</li><li class=footer__item><a href=https://github.com/lxndrblz/anatole target=_blank rel="noopener noreferrer" title>Powered by the Anatole Hugo Theme</a></li><li class=footer__item><a href title>Opinions are my own.</a></li></ul></div></footer><script type=text/javascript src=/js/medium-zoom.min.6547edd39a724f576480c5bfe9a9db99477d370a1f91036f86f70b0eda1eb4ae.js integrity="sha256-ZUft05pyT1dkgMW/6anbmUd9NwofkQNvhvcLDtoetK4=" crossorigin=anonymous></script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-NNLWC1035Y"></script>
+<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag('js',new Date),gtag('config','G-NNLWC1035Y')</script></div></aside><main><div class=autopagerize_page_element><div class=content><div class="post
+animated fadeInDown"><div class=post-content><div class=post-title><h1>Notes on updating to PostgreSQL 14.3, 13.7, 12.11, 11.16, and 10.21</h1><div class=info><em class="fas fa-calendar-day"></em>
+<span class=date>Tue, Jun 7, 2022</span>
+<em class="fas fa-stopwatch"></em>
+<span class=reading-time>6-minute read</span></div></div><p>On May 12, 2022, the PostgreSQL Global Development Group
+<a href=https://www.postgresql.org/about/news/postgresql-143-137-1211-1116-and-1021-released-2449/>released its regular quarterly update</a> for all of its supported versions (10-14) containing
+bug fixes and a security fix for <a href=https://www.postgresql.org/support/security/CVE-2022-1552/>CVE-2022-1552</a>. Per its <a href=https://www.postgresql.org/support/versioning/>versioning policy</a>,
+the PostgreSQL community advises that users run the
+&ldquo;<a href=https://www.postgresql.org/support/versioning/>latest available minor release available for a major version</a>.&rdquo;
+This is generally the correct approach: update releases make each major release
+more stable, and the community makes a concerted effort to avoid introducing
+breaking changes. You should <em>always</em> test each update release before releasing
+it into your production environment.</p><p>However, the May 12, 2022 release had some changes that could have an impact on
+your environment. Specifically, there are two bugs that you should be aware of
+and consider how they may impact your PostgreSQL installations if you choose to
+upgrade. You do need to weigh the decision to upgrade against incorporating the
+fix for CVE-2022-1552 and the
+<a href=https://www.postgresql.org/about/news/postgresql-143-137-1211-1116-and-1021-released-2449/>other bug fixes available in this release</a>.</p><p>The below explains what each issue is, what versions of PostgreSQL it effects,
+the tradeoffs around upgrading and any remediations.</p><h2 id=create-index-concurrently--reindex-concurrently-on-postgresql-14><code>CREATE INDEX CONCURRENTLY</code> / <code>REINDEX CONCURRENTLY</code> on PostgreSQL 14</h2><p>Vacuuming is an
+<a href=https://www.postgresql.org/docs/current/routine-vacuuming.html>essential part of PostgreSQL maintenance</a>
+that performs actions such as reclaiming disk space from updated and deleted
+rows. The <a href=https://www.postgresql.org/about/news/postgresql-14-released-2318/>GA release of PostgreSQL 14</a>
+(14.0) introduced an
+<a href="https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=d9d076222f5b">optimization for <code>VACUUM</code> when <code>CREATE INDEX CONCURRENTLY</code> and <code>REINDEX CONCURRENTLY</code></a> were
+running at the same time.</p><p>There were a few
+<a href=https://www.postgresql.org/message-id/17485-396609c6925b982d%40postgresql.org>bug reports of index corruption in PostgreSQL 14</a> and shortly after the PostgreSQL 14.3
+release, several members of the PostgreSQL community were able to consistently
+reproduce the issue. The optimization described in the above paragraph could
+lead to cases of silent index corruption when indexes are built with
+<a href=https://www.postgresql.org/docs/current/sql-createindex.html><code>CREATE INDEX CONCURRENTLY</code></a>
+or <a href=https://www.postgresql.org/docs/current/sql-reindex.html><code>REINDEX CONCURRENTLY</code></a>.
+The issue was present since PostgreSQL 14.0: it does not affect any of the other
+supported versions of PostgreSQL (i.e.. PostgreSQL 10 - 13).</p><p>After some discussion, the PostgreSQL community decided to
+<a href="https://git.postgresql.org/gitweb/?p=postgresql.git;a=commitdiff;h=e28bb885196916b0a3d898ae4f2be0e38108d81b">revert the <code>VACUUM</code> optimization</a> for
+the time being until a solution that does not contain the risk of silent index
+corruption can be implemented. The community has discussed how to best detect
+this corruption issue using
+<a href=https://www.postgresql.org/docs/current/app-pgamcheck.html><code>pg_amcheck</code></a>,
+specifically with the <code>--heapallindexed</code> flag. This will take an
+<a href=https://www.postgresql.org/docs/current/explicit-locking.html><code>ACCESS SHARE</code></a>
+lock on each table, but it will not block <code>VACUUM</code> and can be run on a standby.
+Note that <code>pg_amcheck</code> can only detect the corruption issue on B-tree indexes,
+and the community is unsure if it can detect all cases of corruption.</p><p>If you have run <code>CREATE INDEX CONCURRENTLY</code> or <code>REINDEX CONCURRENTLY</code> using
+PostgreSQL 14 and need an immediate fix, you can fix your indexes by running
+either running <code>REINDEX</code> or dropping and recreating the index <strong>without</strong> the
+<code>CONCURRENTLY</code> option. Once PostgreSQL 14.4 is available, you can use
+<code>CONCURRENTLY</code>. The
+<a href=https://www.postgresql.org/docs/current/app-reindexdb.html><code>reindexdb</code></a>
+command-line utility can help with the process as the <code>--jobs</code> flag lets you
+execute multiple <code>REINDEX</code> operations at the same time across the entire
+database.</p><h2 id=a-brief-explanation-of-cve-2022-1552>A brief explanation of CVE-2022-1552</h2><p>To understand the other issue, its first necessary to understand the impact of
+CVE-2022-1552. As described,
+<a href=https://www.postgresql.org/support/security/CVE-2022-1552/>CVE-2022-1552</a>
+closes a vulnerability where an unprivileged user can craft malicious SQL and
+use certain commands (Autovacuum, <code>REINDEX</code>, <code>CREATE INDEX</code>,
+<code>REFRESH MATERIALIZED VIEW</code>, <code>CLUSTER</code>, and <code>pg_amcheck</code>) to escalate to become
+a PostgreSQL superuser. A malicious user still needs to have an account with the
+PostgreSQL system to perform this exploit.</p><p>Systems that have unprivileged PostgreSQL users that have risk of SQL injection
+(e.g. web applications) or multi-tenant systems may be particularly affected by
+this CVE. While upgrading to 14.3 et al. fixes the issue, the community provides
+guidance that if you cannot take this upgrade, you can still remediate the issue
+by disabling autovacuum (with a warning on performance tradeoffs), not running
+the above commands, and to not perform restores using the output from
+<code>pg_dump</code>.</p><p>This issue affects all supported versions of PostgreSQL (10-14) but, as the CVE
+notes, the issue is quite old and is not patched in unsupported versions (e.g.
+9.6 and older).</p><h2 id=creating-an-expression-index-using-an-operator-class-from-a-different-schema>Creating an expression index using an operator class from a different schema</h2><p>Shortly after the May 12, 2022 update release, there was a report on the
+PostgreSQL bugs mailing list where a user could not create an
+<a href=https://www.postgresql.org/docs/current/indexes-expressional.html>expression index</a>
+as an unprivileged user when
+<a href=https://www.postgresql.org/message-id/flat/20220531152855.GA2236210%40nathanxps13#cf62ad5183084f9da0f458c446bb995d>using an operator class from a different schema that was created by a different user</a>.
+Specifically, the case used the the
+<a href=https://www.postgresql.org/docs/current/pgtrgm.html#id-1.11.7.42.8><code>gist_trgm_ops</code></a>
+operator class from the <code>pg_trgm</code> index to allow text similarity operators to be
+indexable. While the issue was first reported based on the output of
+<a href=https://www.postgresql.org/docs/current/app-pgdump.html><code>pg_dump</code></a>, this can
+be reproduced in a straightforward way using a
+<a href=https://www.postgresql.org/message-id/20220526055047.GA3153526%40rfd.leadboat.com>few commands</a>.
+There may be a few other cases where this issue may occur with other expression
+indexes, but the above situation has been consistently reproduced.</p><p>The fix for <a href=https://www.postgresql.org/support/security/CVE-2022-1552/>CVE-2022-1552</a>
+introduced this issue and only affects PostgreSQL 14.3, 13.7, 12.11, 11.16, and
+10.21. As of the writing of this blog post, there is no fix available. For a
+remediation, you can add the operator classes to the same schema where you are
+creating the index. Ensure that any changes comply with the security posture
+you are enforcing for your database.</p><h2 id=should-i-upgrade-to-143-137-1211-1116-1021>Should I upgrade to 14.3, 13.7, 12.11, 11.16, 10.21?</h2><p>If your database has a single-user and is the PostgreSQL superuser, you should
+be able to upgrade without issues. Note that if you are on PostgreSQL 14, you
+are still affected by the <code>CREATE INDEX CONCURRENTLY</code> / <code>REINDEX CONCURRENTLY</code>
+issue and you should not use those commands until the fix is in place.</p><p>For all other cases, you will need to weigh the tradeoffs of the above issues.
+If you are on PostgreSQL 14, you will be affected by the
+<code>CREATE INDEX CONCURRENTLY</code> / <code>REINDEX CONCURRENTLY</code> issue regardless if you
+take this update. You should be aware of this issue and not run those commands.
+If you have, you may need to reindex. The index corruption issue should not
+prevent you from updating from PostgreSQL 14.3.</p><p>If you are running a system that contains an unprivileged PostgreSQL user, you
+will need to weigh the tradeoff of incorporating the fix for CVE-2022-1552
+versus potential breakage with your application. The bug most likely shows
+itself when performing &ldquo;schema migrations&rdquo; or restoring from a <code>pg_dump</code>, but is
+limited to if you are using any operator classes (e.g. for indexing) and how you
+have structured your schemas. There may be some other unreported cases
+that are affected by this issue, so be sure you test restoring your schema from
+a <code>pg_dump</code> (e.g. <code>pg_dump --schema-only</code>).</p><p>As the CVE mentions, you can still remediate the vulnerability without
+upgrading, but there are performance and potentially stability risks with these
+steps. Vacuuming is
+<a href=https://www.postgresql.org/docs/current/routine-vacuuming.html>an essential part of PostgreSQL maintenance</a>
+and if you do not use it, your system can end up slowing down. In more extreme
+cases, a system can hit
+<a href=https://www.postgresql.org/docs/current/routine-vacuuming.html#VACUUM-FOR-WRAPAROUND>transaction ID wraparound</a>,
+which will put a PostgreSQL database into an unusable state.</p><p>If you do not believe your application is affected by the issue with creating
+indexes, you should consider upgrading. The fix for CVE-2022-1552 is much easier
+to apply than the remediation steps. The remediation carries a risk of
+performance degradation and instability for your system, so if you believe it is
+safe to take the upgrade, you should do so.</p><p>The PostgreSQL community guidance to
+<a href=https://www.postgresql.org/support/versioning/>run the latest release of a major version</a>
+is a good best practice to follow. You should read through the
+<a href=https://www.postgresql.org/about/news/postgresql-143-137-1211-1116-and-1021-released-2449/>release announcement</a> and <a href=https://www.postgresql.org/docs/release/>release notes</a>
+to understand what fixes are available, and test your applications against the
+update releases before deploying them to production.</p></div><div class=post-footer><div class=info><span class=separator><a class=tag href=/tags/postgres/>postgres</a><a class=tag href=/tags/postgreql/>postgreql</a></span></div></div></div></div></div></main></div><footer class="footer footer--base"><div class=by_farbox><ul class=footer__list><li class=footer__item>&copy;
+2022 Jonathan Katz</li><li class=footer__item><a href=https://github.com/lxndrblz/anatole target=_blank rel="noopener noreferrer" title>Powered by the Anatole Hugo Theme</a></li><li class=footer__item><a href title>Opinions are my own.</a></li></ul></div></footer><script type=text/javascript src=/js/medium-zoom.min.6547edd39a724f576480c5bfe9a9db99477d370a1f91036f86f70b0eda1eb4ae.js integrity="sha256-ZUft05pyT1dkgMW/6anbmUd9NwofkQNvhvcLDtoetK4=" crossorigin=anonymous></script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-NNLWC1035Y"></script>
+<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag('js',new Date),gtag('config','G-NNLWC1035Y')</script></body></html>

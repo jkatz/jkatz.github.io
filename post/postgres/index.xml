@@ -1,57 +1,188 @@
-<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Posts on Postgres on Jonathan Katz</title><link>https://jkatz.github.io/post/postgres/</link><description>Recent content in Posts on Postgres on Jonathan Katz</description><generator>Hugo -- gohugo.io</generator><language>en</language><lastBuildDate>Sun, 23 Jan 2022 00:00:00 +0000</lastBuildDate><atom:link href="https://jkatz.github.io/post/postgres/index.xml" rel="self" type="application/rss+xml"/><item><title>"Read-Only" Mode for PostgreSQL</title><link>https://jkatz.github.io/post/postgres/postgres-read-only/</link><pubDate>Sun, 23 Jan 2022 00:00:00 +0000</pubDate><guid>https://jkatz.github.io/post/postgres/postgres-read-only/</guid><description>&lt;p>Typically when discussing having &amp;ldquo;read-only&amp;rdquo; connections to a &lt;a href="https://www.postgresql.org">PostgreSQL&lt;/a> database, it is in the context of connecting to a &lt;a href="https://www.postgresql.org/docs/current/high-availability.html">replica&lt;/a>.&lt;/p>
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Posts on Postgres on Jonathan Katz</title><link>https://jkatz.github.io/post/postgres/</link><description>Recent content in Posts on Postgres on Jonathan Katz</description><generator>Hugo -- gohugo.io</generator><language>en</language><lastBuildDate>Tue, 07 Jun 2022 00:00:00 +0000</lastBuildDate><atom:link href="https://jkatz.github.io/post/postgres/index.xml" rel="self" type="application/rss+xml"/><item><title>Notes on updating to PostgreSQL 14.3, 13.7, 12.11, 11.16, and 10.21</title><link>https://jkatz.github.io/post/postgres/may-2022-release-should-i-update/</link><pubDate>Tue, 07 Jun 2022 00:00:00 +0000</pubDate><guid>https://jkatz.github.io/post/postgres/may-2022-release-should-i-update/</guid><description>&lt;p>On May 12, 2022, the PostgreSQL Global Development Group
+&lt;a href="https://www.postgresql.org/about/news/postgresql-143-137-1211-1116-and-1021-released-2449/">released its regular quarterly update&lt;/a> for all of its supported versions (10-14) containing
+bug fixes and a security fix for &lt;a href="https://www.postgresql.org/support/security/CVE-2022-1552/">CVE-2022-1552&lt;/a>. Per its &lt;a href="https://www.postgresql.org/support/versioning/">versioning policy&lt;/a>,
+the PostgreSQL community advises that users run the
+&amp;ldquo;&lt;a href="https://www.postgresql.org/support/versioning/">latest available minor release available for a major version&lt;/a>.&amp;rdquo;
+This is generally the correct approach: update releases make each major release
+more stable, and the community makes a concerted effort to avoid introducing
+breaking changes. You should &lt;em>always&lt;/em> test each update release before releasing
+it into your production environment.&lt;/p>
+&lt;p>However, the May 12, 2022 release had some changes that could have an impact on
+your environment. Specifically, there are two bugs that you should be aware of
+and consider how they may impact your PostgreSQL installations if you choose to
+upgrade. You do need to weigh the decision to upgrade against incorporating the
+fix for CVE-2022-1552 and the
+&lt;a href="https://www.postgresql.org/about/news/postgresql-143-137-1211-1116-and-1021-released-2449/">other bug fixes available in this release&lt;/a>.&lt;/p>
+&lt;p>The below explains what each issue is, what versions of PostgreSQL it effects,
+the tradeoffs around upgrading and any remediations.&lt;/p>
+&lt;h2 id="create-index-concurrently--reindex-concurrently-on-postgresql-14">&lt;code>CREATE INDEX CONCURRENTLY&lt;/code> / &lt;code>REINDEX CONCURRENTLY&lt;/code> on PostgreSQL 14&lt;/h2>
+&lt;p>Vacuuming is an
+&lt;a href="https://www.postgresql.org/docs/current/routine-vacuuming.html">essential part of PostgreSQL maintenance&lt;/a>
+that performs actions such as reclaiming disk space from updated and deleted
+rows. The &lt;a href="https://www.postgresql.org/about/news/postgresql-14-released-2318/">GA release of PostgreSQL 14&lt;/a>
+(14.0) introduced an
+&lt;a href="https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=d9d076222f5b">optimization for &lt;code>VACUUM&lt;/code> when &lt;code>CREATE INDEX CONCURRENTLY&lt;/code> and &lt;code>REINDEX CONCURRENTLY&lt;/code>&lt;/a> were
+running at the same time.&lt;/p>
+&lt;p>There were a few
+&lt;a href="https://www.postgresql.org/message-id/17485-396609c6925b982d%40postgresql.org">bug reports of index corruption in PostgreSQL 14&lt;/a> and shortly after the PostgreSQL 14.3
+release, several members of the PostgreSQL community were able to consistently
+reproduce the issue. The optimization described in the above paragraph could
+lead to cases of silent index corruption when indexes are built with
+&lt;a href="https://www.postgresql.org/docs/current/sql-createindex.html">&lt;code>CREATE INDEX CONCURRENTLY&lt;/code>&lt;/a>
+or &lt;a href="https://www.postgresql.org/docs/current/sql-reindex.html">&lt;code>REINDEX CONCURRENTLY&lt;/code>&lt;/a>.
+The issue was present since PostgreSQL 14.0: it does not affect any of the other
+supported versions of PostgreSQL (i.e.. PostgreSQL 10 - 13).&lt;/p>
+&lt;p>After some discussion, the PostgreSQL community decided to
+&lt;a href="https://git.postgresql.org/gitweb/?p=postgresql.git;a=commitdiff;h=e28bb885196916b0a3d898ae4f2be0e38108d81b">revert the &lt;code>VACUUM&lt;/code> optimization&lt;/a> for
+the time being until a solution that does not contain the risk of silent index
+corruption can be implemented. The community has discussed how to best detect
+this corruption issue using
+&lt;a href="https://www.postgresql.org/docs/current/app-pgamcheck.html">&lt;code>pg_amcheck&lt;/code>&lt;/a>,
+specifically with the &lt;code>--heapallindexed&lt;/code> flag. This will take an
+&lt;a href="https://www.postgresql.org/docs/current/explicit-locking.html">&lt;code>ACCESS SHARE&lt;/code>&lt;/a>
+lock on each table, but it will not block &lt;code>VACUUM&lt;/code> and can be run on a standby.
+Note that &lt;code>pg_amcheck&lt;/code> can only detect the corruption issue on B-tree indexes,
+and the community is unsure if it can detect all cases of corruption.&lt;/p>
+&lt;p>If you have run &lt;code>CREATE INDEX CONCURRENTLY&lt;/code> or &lt;code>REINDEX CONCURRENTLY&lt;/code> using
+PostgreSQL 14 and need an immediate fix, you can fix your indexes by running
+either running &lt;code>REINDEX&lt;/code> or dropping and recreating the index &lt;strong>without&lt;/strong> the
+&lt;code>CONCURRENTLY&lt;/code> option. Once PostgreSQL 14.4 is available, you can use
+&lt;code>CONCURRENTLY&lt;/code>. The
+&lt;a href="https://www.postgresql.org/docs/current/app-reindexdb.html">&lt;code>reindexdb&lt;/code>&lt;/a>
+command-line utility can help with the process as the &lt;code>--jobs&lt;/code> flag lets you
+execute multiple &lt;code>REINDEX&lt;/code> operations at the same time across the entire
+database.&lt;/p>
+&lt;h2 id="a-brief-explanation-of-cve-2022-1552">A brief explanation of CVE-2022-1552&lt;/h2>
+&lt;p>To understand the other issue, its first necessary to understand the impact of
+CVE-2022-1552. As described,
+&lt;a href="https://www.postgresql.org/support/security/CVE-2022-1552/">CVE-2022-1552&lt;/a>
+closes a vulnerability where an unprivileged user can craft malicious SQL and
+use certain commands (Autovacuum, &lt;code>REINDEX&lt;/code>, &lt;code>CREATE INDEX&lt;/code>,
+&lt;code>REFRESH MATERIALIZED VIEW&lt;/code>, &lt;code>CLUSTER&lt;/code>, and &lt;code>pg_amcheck&lt;/code>) to escalate to become
+a PostgreSQL superuser. A malicious user still needs to have an account with the
+PostgreSQL system to perform this exploit.&lt;/p>
+&lt;p>Systems that have unprivileged PostgreSQL users that have risk of SQL injection
+(e.g. web applications) or multi-tenant systems may be particularly affected by
+this CVE. While upgrading to 14.3 et al. fixes the issue, the community provides
+guidance that if you cannot take this upgrade, you can still remediate the issue
+by disabling autovacuum (with a warning on performance tradeoffs), not running
+the above commands, and to not perform restores using the output from
+&lt;code>pg_dump&lt;/code>.&lt;/p>
+&lt;p>This issue affects all supported versions of PostgreSQL (10-14) but, as the CVE
+notes, the issue is quite old and is not patched in unsupported versions (e.g.
+9.6 and older).&lt;/p>
+&lt;h2 id="creating-an-expression-index-using-an-operator-class-from-a-different-schema">Creating an expression index using an operator class from a different schema&lt;/h2>
+&lt;p>Shortly after the May 12, 2022 update release, there was a report on the
+PostgreSQL bugs mailing list where a user could not create an
+&lt;a href="https://www.postgresql.org/docs/current/indexes-expressional.html">expression index&lt;/a>
+as an unprivileged user when
+&lt;a href="https://www.postgresql.org/message-id/flat/20220531152855.GA2236210%40nathanxps13#cf62ad5183084f9da0f458c446bb995d">using an operator class from a different schema that was created by a different user&lt;/a>.
+Specifically, the case used the the
+&lt;a href="https://www.postgresql.org/docs/current/pgtrgm.html#id-1.11.7.42.8">&lt;code>gist_trgm_ops&lt;/code>&lt;/a>
+operator class from the &lt;code>pg_trgm&lt;/code> index to allow text similarity operators to be
+indexable. While the issue was first reported based on the output of
+&lt;a href="https://www.postgresql.org/docs/current/app-pgdump.html">&lt;code>pg_dump&lt;/code>&lt;/a>, this can
+be reproduced in a straightforward way using a
+&lt;a href="https://www.postgresql.org/message-id/20220526055047.GA3153526%40rfd.leadboat.com">few commands&lt;/a>.
+There may be a few other cases where this issue may occur with other expression
+indexes, but the above situation has been consistently reproduced.&lt;/p>
+&lt;p>The fix for &lt;a href="https://www.postgresql.org/support/security/CVE-2022-1552/">CVE-2022-1552&lt;/a>
+introduced this issue and only affects PostgreSQL 14.3, 13.7, 12.11, 11.16, and
+10.21. As of the writing of this blog post, there is no fix available. For a
+remediation, you can add the operator classes to the same schema where you are
+creating the index. Ensure that any changes comply with the security posture
+you are enforcing for your database.&lt;/p>
+&lt;h2 id="should-i-upgrade-to-143-137-1211-1116-1021">Should I upgrade to 14.3, 13.7, 12.11, 11.16, 10.21?&lt;/h2>
+&lt;p>If your database has a single-user and is the PostgreSQL superuser, you should
+be able to upgrade without issues. Note that if you are on PostgreSQL 14, you
+are still affected by the &lt;code>CREATE INDEX CONCURRENTLY&lt;/code> / &lt;code>REINDEX CONCURRENTLY&lt;/code>
+issue and you should not use those commands until the fix is in place.&lt;/p>
+&lt;p>For all other cases, you will need to weigh the tradeoffs of the above issues.
+If you are on PostgreSQL 14, you will be affected by the
+&lt;code>CREATE INDEX CONCURRENTLY&lt;/code> / &lt;code>REINDEX CONCURRENTLY&lt;/code> issue regardless if you
+take this update. You should be aware of this issue and not run those commands.
+If you have, you may need to reindex. The index corruption issue should not
+prevent you from updating from PostgreSQL 14.3.&lt;/p>
+&lt;p>If you are running a system that contains an unprivileged PostgreSQL user, you
+will need to weigh the tradeoff of incorporating the fix for CVE-2022-1552
+versus potential breakage with your application. The bug most likely shows
+itself when performing &amp;ldquo;schema migrations&amp;rdquo; or restoring from a &lt;code>pg_dump&lt;/code>, but is
+limited to if you are using any operator classes (e.g. for indexing) and how you
+have structured your schemas. There may be some other unreported cases
+that are affected by this issue, so be sure you test restoring your schema from
+a &lt;code>pg_dump&lt;/code> (e.g. &lt;code>pg_dump --schema-only&lt;/code>).&lt;/p>
+&lt;p>As the CVE mentions, you can still remediate the vulnerability without
+upgrading, but there are performance and potentially stability risks with these
+steps. Vacuuming is
+&lt;a href="https://www.postgresql.org/docs/current/routine-vacuuming.html">an essential part of PostgreSQL maintenance&lt;/a>
+and if you do not use it, your system can end up slowing down. In more extreme
+cases, a system can hit
+&lt;a href="https://www.postgresql.org/docs/current/routine-vacuuming.html#VACUUM-FOR-WRAPAROUND">transaction ID wraparound&lt;/a>,
+which will put a PostgreSQL database into an unusable state.&lt;/p>
+&lt;p>If you do not believe your application is affected by the issue with creating
+indexes, you should consider upgrading. The fix for CVE-2022-1552 is much easier
+to apply than the remediation steps. The remediation carries a risk of
+performance degradation and instability for your system, so if you believe it is
+safe to take the upgrade, you should do so.&lt;/p>
+&lt;p>The PostgreSQL community guidance to
+&lt;a href="https://www.postgresql.org/support/versioning/">run the latest release of a major version&lt;/a>
+is a good best practice to follow. You should read through the
+&lt;a href="https://www.postgresql.org/about/news/postgresql-143-137-1211-1116-and-1021-released-2449/">release announcement&lt;/a> and &lt;a href="https://www.postgresql.org/docs/release/">release notes&lt;/a>
+to understand what fixes are available, and test your applications against the
+update releases before deploying them to production.&lt;/p></description></item><item><title>"Read-Only" Mode for PostgreSQL</title><link>https://jkatz.github.io/post/postgres/postgres-read-only/</link><pubDate>Sun, 23 Jan 2022 00:00:00 +0000</pubDate><guid>https://jkatz.github.io/post/postgres/postgres-read-only/</guid><description>&lt;p>Typically when discussing having &amp;ldquo;read-only&amp;rdquo; connections to a &lt;a href="https://www.postgresql.org">PostgreSQL&lt;/a> database, it is in the context of connecting to a &lt;a href="https://www.postgresql.org/docs/current/high-availability.html">replica&lt;/a>.&lt;/p>
 &lt;p>There are a variety of methods available to route connections with known read-only queries (i.e. queries with &lt;code>SELECT&lt;/code> statements&amp;hellip;that are not calling &lt;a href="https://www.postgresql.org/docs/current/xfunc-volatility.html">&lt;code>VOLATILE&lt;/code> functions&lt;/a> that modify data). This includes connection proxy software like &lt;a href="https://www.pgpool.net/">Pgpool-II&lt;/a> or framework mechanisms such as &lt;a href="https://docs.djangoproject.com/en/4.0/topics/db/multi-db/#automatic-database-routing">Django&amp;rsquo;s database router&lt;/a>.&lt;/p>
 &lt;p>However, there are situations where you might need to force read-only connections to your primary (read-write) Postgres instance. Some examples include putting your application into a degraded state to perform a database move or upgrade, or allowing an administrator to inspect a system that may be accumulating &lt;a href="https://www.postgresql.org/docs/current/wal-intro.html">write-ahead logs&lt;/a> that track all changes to the system.&lt;/p>
 &lt;p>PostgreSQL has a configuration parameter call &lt;a href="https://www.postgresql.org/docs/current/runtime-config-client.html#GUC-DEFAULT-TRANSACTION-READ-ONLY">&lt;code>default_transaction_read_only&lt;/code>&lt;/a>. Setting &lt;code>default_transaction_read_only&lt;/code> globally to &lt;code>on&lt;/code> forces all connections to disallow writes to the database. &lt;code>default_transaction_read_only&lt;/code> is a reloadable parameter, so you do not need to restart your Postgres instance to use it.&lt;/p>
 &lt;p>Here is a quick example of how &lt;code>default_transaction_read_only&lt;/code> works. First, ensure your system does not have &lt;code>default_transaction_read_only&lt;/code> set:&lt;/p>
-&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="n">postgres&lt;/span>&lt;span class="o">=#&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">SHOW&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">default_transaction_read_only&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">default_transaction_read_only&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">&lt;/span>&lt;span class="c1">-------------------------------
-&lt;/span>&lt;span class="c1">&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">off&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">row&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">&lt;/span>&lt;span class="n">postgres&lt;/span>&lt;span class="o">=#&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">TABLE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">IF&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">NOT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">EXISTS&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">abc&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">id&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="nb">int&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">INSERT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">INTO&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">abc&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">VALUES&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">RETURNING&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">id&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">&lt;/span>&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">TABLE&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">id&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">&lt;/span>&lt;span class="c1">----
-&lt;/span>&lt;span class="c1">&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">row&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">&lt;/span>&lt;span class="k">INSERT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">0&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="w">
-&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>This works as expected: we&amp;rsquo;re able to create a table and insert data. Now let&amp;rsquo;s put the system into &lt;code>default_transaction_read_only&lt;/code> mode (note that I am running this on &lt;a href="https://www.postgresql.org/about/news/postgresql-14-released-2318/">PostgreSQL 14&lt;/a>)&lt;/p>
-&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="k">ALTER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">SYSTEM&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">SET&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">default_transaction_read_only&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">TO&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">on&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">&lt;/span>&lt;span class="k">SELECT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">pg_reload_conf&lt;/span>&lt;span class="p">();&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">&lt;/span>&lt;span class="k">SHOW&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">default_transaction_read_only&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
-&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>Ensure that &lt;code>default_transaction_read_only&lt;/code> is enabled:&lt;/p>
-&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="n">postgres&lt;/span>&lt;span class="o">=#&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">SHOW&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">default_transaction_read_only&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">default_transaction_read_only&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">&lt;/span>&lt;span class="c1">-------------------------------
-&lt;/span>&lt;span class="c1">&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">on&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">row&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
-&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>Now verify that writes are disallowed:&lt;/p>
-&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="n">postgres&lt;/span>&lt;span class="o">=#&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">INSERT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">INTO&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">abc&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">VALUES&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">2&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">RETURNING&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">id&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">&lt;/span>&lt;span class="n">ERROR&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">cannot&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">execute&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">INSERT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">in&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">a&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">read&lt;/span>&lt;span class="o">-&lt;/span>&lt;span class="k">only&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">transaction&lt;/span>&lt;span class="w">
-&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>Excellent!&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="n">postgres&lt;/span>&lt;span class="o">=#&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">SHOW&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">default_transaction_read_only&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">default_transaction_read_only&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="c1">-------------------------------
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">off&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">row&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="n">postgres&lt;/span>&lt;span class="o">=#&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">TABLE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">IF&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">NOT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">EXISTS&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">abc&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">id&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="nb">int&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">INSERT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">INTO&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">abc&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">VALUES&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">RETURNING&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">id&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">TABLE&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">id&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="c1">----
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">row&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">INSERT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">0&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>This works as expected: we&amp;rsquo;re able to create a table and insert data. Now let&amp;rsquo;s put the system into &lt;code>default_transaction_read_only&lt;/code> mode (note that I am running this on &lt;a href="https://www.postgresql.org/about/news/postgresql-14-released-2318/">PostgreSQL 14&lt;/a>)&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="k">ALTER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">SYSTEM&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">SET&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">default_transaction_read_only&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">TO&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">on&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">SELECT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">pg_reload_conf&lt;/span>&lt;span class="p">();&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">SHOW&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">default_transaction_read_only&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>Ensure that &lt;code>default_transaction_read_only&lt;/code> is enabled:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="n">postgres&lt;/span>&lt;span class="o">=#&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">SHOW&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">default_transaction_read_only&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">default_transaction_read_only&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="c1">-------------------------------
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">on&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">row&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>Now verify that writes are disallowed:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="n">postgres&lt;/span>&lt;span class="o">=#&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">INSERT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">INTO&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">abc&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">VALUES&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">2&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">RETURNING&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">id&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="n">ERROR&lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">cannot&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">execute&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">INSERT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">in&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">a&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">read&lt;/span>&lt;span class="o">-&lt;/span>&lt;span class="k">only&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">transaction&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>Excellent!&lt;/p>
 &lt;p>Note that &lt;code>default_transaction_read_only&lt;/code> is not a panacea: there are some &lt;a href="https://en.wikipedia.org/wiki/Caveat_emptor">caveats&lt;/a> that you should be aware of.&lt;/p>
 &lt;p>First, &lt;code>default_transaction_read_only&lt;/code> can be overriden in a session, even if the value is set database-wide. For example:&lt;/p>
-&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="n">postgres&lt;/span>&lt;span class="o">=#&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">SHOW&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">default_transaction_read_only&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">default_transaction_read_only&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">&lt;/span>&lt;span class="c1">-------------------------------
-&lt;/span>&lt;span class="c1">&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">on&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">row&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">&lt;/span>&lt;span class="n">postgres&lt;/span>&lt;span class="o">=#&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">SET&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">default_transaction_read_only&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">TO&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">off&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">&lt;/span>&lt;span class="k">SET&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">&lt;/span>&lt;span class="n">postgres&lt;/span>&lt;span class="o">=#&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">INSERT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">INTO&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">abc&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">VALUES&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">2&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">RETURNING&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">id&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">id&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">&lt;/span>&lt;span class="c1">----
-&lt;/span>&lt;span class="c1">&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">2&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">row&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">
-&lt;/span>&lt;span class="w">&lt;/span>&lt;span class="k">INSERT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">0&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="w">
-&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>Second, when utilizing &lt;code>default_transaction_read_only&lt;/code> with an application, you must also ensure your app can be configured to send only read queries to the database, ensuring a smooth user experience.&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="n">postgres&lt;/span>&lt;span class="o">=#&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">SHOW&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">default_transaction_read_only&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">default_transaction_read_only&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="c1">-------------------------------
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">on&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">row&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="n">postgres&lt;/span>&lt;span class="o">=#&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">SET&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">default_transaction_read_only&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">TO&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">off&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">SET&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="n">postgres&lt;/span>&lt;span class="o">=#&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">INSERT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">INTO&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">abc&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">VALUES&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">2&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">RETURNING&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">id&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">id&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="c1">----
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">2&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">row&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">INSERT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">0&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>Second, when utilizing &lt;code>default_transaction_read_only&lt;/code> with an application, you must also ensure your app can be configured to send only read queries to the database, ensuring a smooth user experience.&lt;/p>
 &lt;p>That said, if you have a situation where you need to put a PostgreSQL primary instance into a &amp;ldquo;read-only&amp;rdquo; mode temporarily, you can use &lt;code>default_transaction_read_only&lt;/code> to prevent write transactions.&lt;/p></description></item></channel></rss>
