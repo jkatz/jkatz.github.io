@@ -5,7 +5,7 @@ date = "2022-01-23"
 description = "Learn how to put your Postgres database into \"read-only\" mode."
 tags = [
     "postgres",
-    "postgreql",
+    "postgresql",
 ]
 +++
 

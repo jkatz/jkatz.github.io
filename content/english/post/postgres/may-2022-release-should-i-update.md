@@ -5,7 +5,7 @@ date = "2022-06-07"
 description = "This PostgreSQL update release has some issues that could impact you. Learn what they are and if you should update."
 tags = [
     "postgres",
-    "postgreql",
+    "postgresql",
 ]
 +++
 
