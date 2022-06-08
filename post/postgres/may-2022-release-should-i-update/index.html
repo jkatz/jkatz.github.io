@@ -1,5 +1,5 @@
 <!doctype html><html dir=ltr lang=en data-theme><head><title>Notes on updating to PostgreSQL 14.3, 13.7, 12.11, 11.16, and 10.21 |
-Jonathan Katz</title><meta charset=utf-8><meta name=generator content="Hugo 0.100.1"><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name=description content="
+Jonathan Katz</title><meta charset=utf-8><meta name=generator content="Hugo 0.100.2"><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name=description content="
       This PostgreSQL update release has some issues that could impact you. Learn what they are and if you should update.
 
 
@@ -8,7 +8,7 @@ Jonathan Katz</title><meta charset=utf-8><meta name=generator content="Hugo 0.10
       This PostgreSQL update release has some issues that could impact you. Learn what they are and if you should update.
 
 
-    ","inLanguage":"en","isFamilyFriendly":"true","mainEntityOfPage":{"@type":"WebPage","@id":"https:\/\/jkatz.github.io\/post\/postgres\/may-2022-release-should-i-update\/"},"author":{"@type":"Person","name":"Jonathan Katz"},"creator":{"@type":"Person","name":"Jonathan Katz"},"accountablePerson":{"@type":"Person","name":"Jonathan Katz"},"copyrightHolder":{"@type":"Person","name":"Jonathan Katz"},"copyrightYear":"2022","dateCreated":"2022-06-07T00:00:00.00Z","datePublished":"2022-06-07T00:00:00.00Z","dateModified":"2022-06-07T00:00:00.00Z","publisher":{"@type":"Organization","name":"Jonathan Katz","url":"https://jkatz.github.io","logo":{"@type":"ImageObject","url":"https:\/\/jkatz.github.io\/favicons\/favicon-32x32.png","width":"32","height":"32"}},"image":[],"url":"https:\/\/jkatz.github.io\/post\/postgres\/may-2022-release-should-i-update\/","wordCount":"1258","genre":[],"keywords":["postgres","postgresql"]}</script></head><body><header><div class="page-top
+    ","inLanguage":"en","isFamilyFriendly":"true","mainEntityOfPage":{"@type":"WebPage","@id":"https:\/\/jkatz.github.io\/post\/postgres\/may-2022-release-should-i-update\/"},"author":{"@type":"Person","name":"Jonathan Katz"},"creator":{"@type":"Person","name":"Jonathan Katz"},"accountablePerson":{"@type":"Person","name":"Jonathan Katz"},"copyrightHolder":{"@type":"Person","name":"Jonathan Katz"},"copyrightYear":"2022","dateCreated":"2022-06-07T00:00:00.00Z","datePublished":"2022-06-07T00:00:00.00Z","dateModified":"2022-06-07T00:00:00.00Z","publisher":{"@type":"Organization","name":"Jonathan Katz","url":"https://jkatz.github.io","logo":{"@type":"ImageObject","url":"https:\/\/jkatz.github.io\/favicons\/favicon-32x32.png","width":"32","height":"32"}},"image":[],"url":"https:\/\/jkatz.github.io\/post\/postgres\/may-2022-release-should-i-update\/","wordCount":"1253","genre":[],"keywords":["postgres","postgresql"]}</script></head><body><header><div class="page-top
 animated fadeInDown"><a role=button class=navbar-burger data-target=navMenu aria-label=menu aria-expanded=false><span aria-hidden=true></span>
 <span aria-hidden=true></span>
 <span aria-hidden=true></span></a><nav><ul class=nav__list id=navMenu><div class=nav__links><li><a href=/ title>Home</a></li><li><a href=/post/ title>Posts</a></li><li><a href=/talks/ title>Talks</a></li><li><a href=/about/ title>About</a></li></div><ul><li><a class=theme-switch title="Switch Theme"><i class="fas fa-adjust fa-fw" aria-hidden=true></i></a></li></ul></ul></nav></div></header><div class=wrapper><aside><div class="sidebar
@@ -27,11 +27,10 @@ the PostgreSQL community advises that users run the
 This is generally the correct approach: update releases make each major release
 more stable, and the community makes a concerted effort to avoid introducing
 breaking changes. You should <em>always</em> test each update release before releasing
-it into your production environment.</p><p>However, the May 12, 2022 release had some changes that could have an impact on
-your environment. Specifically, there are two bugs that you should be aware of
-and consider how they may impact your PostgreSQL installations if you choose to
-upgrade. You do need to weigh the decision to upgrade against incorporating the
-fix for CVE-2022-1552 and the
+it into your production environment.</p><p>However, there are a few issues that you should be aware when deciding to
+upgrade. One issue affects all versions of PostgreSQL 14 through versions 14.3,
+and one issue is specific to the May 12, 2022 release You do need to weigh the
+decision to upgrade against incorporating the fix for CVE-2022-1552 and the
 <a href=https://www.postgresql.org/about/news/postgresql-143-137-1211-1116-and-1021-released-2449/>other bug fixes available in this release</a>.</p><p>The below explains what each issue is, what versions of PostgreSQL it effects,
 the tradeoffs around upgrading and any remediations.</p><h2 id=create-index-concurrently--reindex-concurrently-on-postgresql-14><code>CREATE INDEX CONCURRENTLY</code> / <code>REINDEX CONCURRENTLY</code> on PostgreSQL 14</h2><p>Vacuuming is an
 <a href=https://www.postgresql.org/docs/current/routine-vacuuming.html>essential part of PostgreSQL maintenance</a>
