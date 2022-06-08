@@ -19,11 +19,10 @@ more stable, and the community makes a concerted effort to avoid introducing
 breaking changes. You should *always* test each update release before releasing
 it into your production environment.
 
-However, the May 12, 2022 release had some changes that could have an impact on
-your environment. Specifically, there are two bugs that you should be aware of
-and consider how they may impact your PostgreSQL installations if you choose to
-upgrade. You do need to weigh the decision to upgrade against incorporating the
-fix for CVE-2022-1552 and the
+However, there are a few issues that you should be aware when deciding to
+upgrade. One issue affects all versions of PostgreSQL 14 through versions 14.3,
+and one issue is specific to the May 12, 2022 release You do need to weigh the
+decision to upgrade against incorporating the fix for CVE-2022-1552 and the
 [other bug fixes available in this release](https://www.postgresql.org/about/news/postgresql-143-137-1211-1116-and-1021-released-2449/).
 
 The below explains what each issue is, what versions of PostgreSQL it effects,
