@@ -52,6 +52,8 @@ When I first started using, let alone contributing, to open source, I never thou
   - Mainly governance, but I have some big contributions to the website and a couple in the core database software.
 - [Crunchy Postgres Operator](https://github.com/CrunchyData/postgres-operator)
   - Mostly on v4; Was mainly focused on product aspects of v5.
+- [`pg_tle`](https://github.com/aws/pg_tle/) (aka "Trusted Language Extensions for PostgreSQL")
+  - Involved in all aspects of project: product, development, documentation
 - [asyncpg](https://github.com/MagicStack/asyncpg)
   - [SCRAM Support!](https://github.com/MagicStack/asyncpg/pull/437)
 - [Patroni](https://github.com/zalando/patroni)
