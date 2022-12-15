@@ -1,7 +1,7 @@
 +++
 title = "Talks"
 description = "Jonathan Katz Tals / Presentations"
-date = "2022-01-02"
+date = "2022-12-14"
 aliases = []
 author = "Jonathan Katz"
 +++
@@ -10,6 +10,13 @@ Below are a collection of talks and presentations I have given though the years.
 
 ## 2022
 
+- re:Invent 2022 (November 2022): [Introducing Trusted Language Extensions for PostgreSQL](https://www.youtube.com/watch?v=gejPKbPQh74&ab_channel=AWSEvents) ([project](https://github.com/aws/pg_tle/))
+- PGConf EU 2022 (October 2022): [Adaptive PgBouncer autoscaling with Karpenter](https://www.postgresql.eu/events/pgconfeu2022/schedule/session/3891-adaptive-pgbouncer-autoscaling-with-karpenter/)
+- AWS Online Tech Talks (September 2022): [Deploying Amazon RDS database for applications in Kubernetes](https://www.youtube.com/watch?v=502GPGhtXSs&ab_channel=AWSOnlineTechTalks)
+- Chicago PostgreSQL User Group (July 2022): [PostgreSQL 15 Features and How They Impact You](https://www.meetup.com/chicago-postgresql-user-group/events/286846968/) ([slides](https://www.slideshare.net/jkatz05/looking-ahead-at-postgresql-15))
+- San Francisco Bay Area PostgreSQL User Group (June 2022): [Get Your Insecure PostgreSQL Passwords to SCRAM!](https://www.meetup.com/postgresql-1/events/285404849/)
+- Percona Live 2022 (May 2022): [Looking ahead at PostgreSQL 15](https://sched.co/10HPw) ([slides](https://www.slideshare.net/jkatz05/looking-ahead-at-postgresql-15))
+- Percona Live 2022 (May 2022): [Get Your Insecure PostgreSQL Passwords to SCRAM!](https://sched.co/10HK8)
 - Data on Kubernetes (January 2022): [Production Postgres Made Easy on Kubernetes](https://www.meetup.com/Data-on-Kubernetes-community/events/283071470/) ([video](https://www.youtube.com/watch?v=S1gyNjRdnD4))
 
 ## 2021
@@ -24,7 +31,7 @@ Below are a collection of talks and presentations I have given though the years.
 
 ## 2020
 
-- OpenShift Commons (September 2020): High Availability PostgreSQL on OpenShift...and more! ([slides](https://www.slideshare.net/jkatz05/high-availability-postgresql-on-openshiftand-more)) ([video](https://www.youtube.com/watch?v=v0XUZZaoqHI))
+- OpenShift Commons (September 2020): High Availability PostgreSQL on OpenShift...and more! ([slides](https://www.slideshare.net/jkatz05/high-availability-postgresql-on-openshiftand-more)) ([video #1](https://www.youtube.com/watch?v=9jbR9lZuSU0) [video #2](https://www.youtube.com/watch?v=9jbR9lZuSU0&ab_channel=OpenShift))
 - PGCon 2020 (May 2020): [Protect Your PostgreSQL Passwords: How SCRAM Works and Why You Need It](https://www.pgcon.org/events/pgcon_2020/schedule/session/29-protect-your-postgresql-passwords-how-scram-works-and-why-you-need-it/) ([slides](https://www.slideshare.net/jkatz05/get-your-insecure-postgresql-passwords-to-scram))
 - Red Hat Community Central (March 2020): High-Availability PostgreSQL on Kubernetes ([video](https://www.youtube.com/watch?v=kdroxlsVdrM))
 - Open Demo (March 2020): Best Practices for Running Highly Available PostgreSQL in Production for Ansible Tower ([video](https://www.youtube.com/watch?v=wyFvB5j1QkI))
