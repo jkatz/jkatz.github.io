@@ -8,6 +8,11 @@ author = "Jonathan Katz"
 
 Below are a collection of talks and presentations I have given though the years. This is not an exhaustive list; if you know of a presentation that you'd like to see added, please reach out to me!
 
+## 2023
+
+- PGCon 2023 (May 2023): [Vectors are the new JSON](https://www.slideshare.net/jkatz05/vectors-are-the-new-json-in-postgresql) ([slides](https://www.slideshare.net/jkatz05/vectors-are-the-new-json-in-postgresql))
+- PGCon 2023 (May 2023): [The Journey Towards Active-Active Replication in PostgreSQL](https://www.pgcon.org/events/pgcon_2023/schedule/session/401-the-journey-towards-active-active-replication-in-postgresql/) ([video](https://www.youtube.com/watch?v=jPp4XIY4XRw&list=PLuJmmKtsV1dNtvBe_7uJQvzHTJKBQF2pu&index=18&ab_channel=PGCon) [slides](https://www.pgcon.org/events/pgcon_2023/sessions/session/401/slides/84/pgcon_2023_active_active.pdf))
+
 ## 2022
 
 - re:Invent 2022 (November 2022): [Introducing Trusted Language Extensions for PostgreSQL](https://www.youtube.com/watch?v=gejPKbPQh74&ab_channel=AWSEvents) ([project](https://github.com/aws/pg_tle/))
