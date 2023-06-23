@@ -1,7 +1,7 @@
 +++
 title = "Talks"
-description = "Jonathan Katz Tals / Presentations"
-date = "2022-12-14"
+description = "Jonathan Katz Talks / Presentations"
+date = "2023-06-23"
 aliases = []
 author = "Jonathan Katz"
 +++
