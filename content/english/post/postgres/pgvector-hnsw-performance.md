@@ -24,7 +24,7 @@ Prior to the v0.5.0, pgvector supported one indexing method: `ivfflat`. To build
 
 The `ivfflat` method has many advantages, including its simplicity to use, speed in building the index, and ability to use it as a "[coarse quantizer](https://github.com/facebookresearch/faiss/wiki/Indexing-1G-vectors)" when indexing over large datasets. However, other algorithms, including "[hierarchical navigable small worlds](https://arxiv.org/ftp/arxiv/papers/1603/1603.09320.pdf)" [HNSW](https://arxiv.org/ftp/arxiv/papers/1603/1603.09320.pdf), provide other methodologies for improving the performance / recall ratio of similarity searches. Many HNSW implementations have demonstrated [favorable performance/recall tradeoffs](https://github.com/erikbern/ann-benchmarks), but usually this comes at a cost of index building time.
 
-Starting with v0.5.0, pgvector has support for `hnsw`. Much like its `ivfflat` implementation, pgvector users can perform all the expected data modification operations with an `hnsw` including insert/update/delete (yes -- `hnsw` in pgvector supports update and delete!). The HNSW algorithm is designed foradding data iteratively and does not require to index an existing data set to achieve better recall. For more information on how HNSW works, please read the [original research paper](https://arxiv.org/ftp/arxiv/papers/1603/1603.09320.pdf).
+Starting with v0.5.0, pgvector has support for `hnsw` thanks to [Andrew Kane](https://github.com/ankane). Much like its `ivfflat` implementation, pgvector users can perform all the expected data modification operations with an `hnsw` including insert/update/delete (yes -- `hnsw` in pgvector supports update and delete!). The HNSW algorithm is designed for adding data iteratively and does not require to index an existing data set to achieve better recall. For more information on how HNSW works, please read the [original research paper](https://arxiv.org/ftp/arxiv/papers/1603/1603.09320.pdf).
 
 While v0.5.0 is not out at the time of this blog post, I wanted to provide an early look at HNSW in pgvector given the excitement for this feature. The rest of this blog post covers how I ran the experiment and some analysis.
 
@@ -49,7 +49,7 @@ For test data, I used the following known data sets from the [ANN Benchmark](htt
 - gist-960-euclidean (1M, 960-dim)
 - dbpedia-openai-1000k-angular (1M, 1536-dim)
 
-I had to [write modules for ANN](https://gist.github.com/jkatz/28a2f174effa987713926ce37bb5d304) for the HNSW implementation for pgvector where I did the following:
+Running these with the ANN Benchmark testing suite required [creating new modules](https://gist.github.com/jkatz/28a2f174effa987713926ce37bb5d304) for the HNSW implementation for pgvector where I did the following:
 
 * Store the vectors in the table using `PLAIN` storage, i.e. the data was not [TOASTed](https://www.postgresql.org/docs/current/storage-toast.html) but stored inline.
 * Built the index (and measured total build time + index size)
