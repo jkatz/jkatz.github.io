@@ -1,4 +1,436 @@
-<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Posts on Postgres on Jonathan Katz</title><link>https://jkatz.github.io/post/postgres/</link><description>Recent content in Posts on Postgres on Jonathan Katz</description><generator>Hugo -- gohugo.io</generator><language>en</language><lastBuildDate>Mon, 26 Jun 2023 00:00:00 +0000</lastBuildDate><atom:link href="https://jkatz.github.io/post/postgres/index.xml" rel="self" type="application/rss+xml"/><item><title>Vectors are the new JSON in PostgreSQL</title><link>https://jkatz.github.io/post/postgres/vectors-json-postgresql/</link><pubDate>Mon, 26 Jun 2023 00:00:00 +0000</pubDate><guid>https://jkatz.github.io/post/postgres/vectors-json-postgresql/</guid><description>&lt;p>&lt;a href="https://en.wikipedia.org/wiki/Row_and_column_vectors">Vectors&lt;/a> are the new &lt;a href="https://en.wikipedia.org/wiki/JSON">JSON&lt;/a>.&lt;/p>
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Posts on Postgres on Jonathan Katz</title><link>https://jkatz.github.io/post/postgres/</link><description>Recent content in Posts on Postgres on Jonathan Katz</description><generator>Hugo -- gohugo.io</generator><language>en</language><lastBuildDate>Thu, 10 Aug 2023 00:00:00 +0000</lastBuildDate><atom:link href="https://jkatz.github.io/post/postgres/index.xml" rel="self" type="application/rss+xml"/><item><title>An early look at HNSW performance with pgvector</title><link>https://jkatz.github.io/post/postgres/pgvector-hnsw-performance/</link><pubDate>Thu, 10 Aug 2023 00:00:00 +0000</pubDate><guid>https://jkatz.github.io/post/postgres/pgvector-hnsw-performance/</guid><description>&lt;p>(Disclosure: I have been contributing to pgvector, though I did not work on the HNSW implementation outside of testing).&lt;/p>
+&lt;p>The surge of usage of AI/ML systems, particularly around generative AI, has also lead to a surge in requirements to store its output, &lt;a href="https://jkatz.github.io/post/postgres/vectors-json-postgresql/">vector data&lt;/a>, in databases. For more details on this, please read my previous post on how &lt;a href="https://jkatz.github.io/post/postgres/vectors-json-postgresql/">vectors are the new JSON&lt;/a>, as they are the &lt;em>lingua franca&lt;/em> in AI/ML systems.&lt;/p>
+&lt;p>&lt;a href="https://github.com/pgvector/pgvector">pgvector&lt;/a> is an open source extension that lets you store vector data in &lt;a href="https://www.postgresql.org/">PostgreSQL&lt;/a> and perform &lt;a href="https://en.wikipedia.org/wiki/Nearest_neighbor_search">nearest neighbor&lt;/a> (K-NN) searches to find similar results. This includes support for exact nearest neighbor searches via scanning an entire table, and &amp;ldquo;approximate nearest neighbor&amp;rdquo; (ANN) via indexing. ANN indexes let you perform faster searches over your vector data, but with a tradeoff of &lt;a href="https://en.wikipedia.org/wiki/Precision_and_recall">recall&lt;/a>&amp;quot;, where &amp;ldquo;recall&amp;rdquo; is the percentage of relevant results returned. A typically K-NN query looks something like this:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="k">SELECT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="o">*&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">FROM&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">table&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">ORDER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">BY&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">embedding&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="o">&amp;lt;-&amp;gt;&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">query_vector&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">LIMIT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">10&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>Prior to the v0.5.0, pgvector supported one indexing method: &lt;code>ivfflat&lt;/code>. To build an index, the &lt;code>ivfflat&lt;/code> algorithm samples (looks over a subset) your vector data, uses a k-means algorithms to define a number of &lt;code>lists&lt;/code> (or &amp;ldquo;centers&amp;rdquo;), and indexes the vectors in the table by assigning each of them to its closest &amp;ldquo;list&amp;rdquo; by distance (e.g. &lt;a href="https://en.wikipedia.org/wiki/Euclidean_distance">L2 distance&lt;/a>, &lt;a href="https://en.wikipedia.org/wiki/Cosine_similarity">cosine distance&lt;/a>). When querying your vector data, you can select how many lists to check using the &lt;code>ivfflat.probes&lt;/code> config parameter. Setting a higher value of &lt;code>ivfflat.probes&lt;/code> increases recall but can decrease query performance.&lt;/p>
+&lt;p>The &lt;code>ivfflat&lt;/code> method has many advantages, including its simplicity to use, speed in building the index, and ability to use it as a &amp;ldquo;&lt;a href="https://github.com/facebookresearch/faiss/wiki/Indexing-1G-vectors">coarse quantizer&lt;/a>&amp;rdquo; when indexing over large datasets. However, other algorithms, including &amp;ldquo;&lt;a href="https://arxiv.org/ftp/arxiv/papers/1603/1603.09320.pdf">hierarchical navigable small worlds&lt;/a>&amp;rdquo; &lt;a href="https://arxiv.org/ftp/arxiv/papers/1603/1603.09320.pdf">HNSW&lt;/a>, provide other methodologies for improving the performance / recall ratio of similarity searches. Many HNSW implementations have demonstrated &lt;a href="https://github.com/erikbern/ann-benchmarks">favorable performance/recall tradeoffs&lt;/a>, but usually this comes at a cost of index building time.&lt;/p>
+&lt;p>Starting with v0.5.0, pgvector has support for &lt;code>hnsw&lt;/code>. Much like its &lt;code>ivfflat&lt;/code> implementation, pgvector users can perform all the expected data modification operations with an &lt;code>hnsw&lt;/code> including insert/update/delete (yes &amp;ndash; &lt;code>hnsw&lt;/code> in pgvector supports update and delete!). The HNSW algorithm is designed foradding data iteratively and does not require to index an existing data set to achieve better recall. For more information on how HNSW works, please read the &lt;a href="https://arxiv.org/ftp/arxiv/papers/1603/1603.09320.pdf">original research paper&lt;/a>.&lt;/p>
+&lt;p>While v0.5.0 is not out at the time of this blog post, I wanted to provide an early look at HNSW in pgvector given the excitement for this feature. The rest of this blog post covers how I ran the experiment and some analysis.&lt;/p>
+&lt;h2 id="testing-performance--recall-of-the-pgvector-hnsw-implementation">Testing performance / recall of the pgvector HNSW implementation&lt;/h2>
+&lt;p>When testing ANN indexing algorithms, you cannot look only at query performance. You may have an indexing algorithm that returns results quickly, but if the recall of those results is low, you may not be delivering the best possible results to your users. This is why it&amp;rsquo;s important to measure recall alongside performance to understand how you can optimize your index for both speed and relevance of your search results.&lt;/p>
+&lt;p>It&amp;rsquo;s also important to see how long it takes to build an index. This is a practical consideration for running vector storage systems in production, as different implementations may need to take locks on the primary table that prevent changes during a build. PostgreSQL offers the ability to both &lt;a href="https://www.postgresql.org/docs/current/sql-createindex.html">create indexes concurrently&lt;/a> and to &lt;a href="https://www.postgresql.org/docs/current/sql-reindex.html">reindex concurrently&lt;/a>, which lets you continue to make changes to data in a table without blocking writes.&lt;/p>
+&lt;p>Here&amp;rsquo;s a summary of different performance attributes that I analyzed in this experiment:&lt;/p>
+&lt;ul>
+&lt;li>&lt;strong>Performance / Recall ratio&lt;/strong>: As mentioned, in ANN indexes, you must look at both performance AND recall to make an informed judgement on how well the index worked.&lt;/li>
+&lt;li>&lt;strong>Index build time&lt;/strong>: How long does it take to build the index? This affects both maintaining the index and how quickly you can add additional data.&lt;/li>
+&lt;li>&lt;strong>Index size&lt;/strong>: How much space does the index take up on disk? (This lead to a &lt;a href="https://github.com/erikbern/ann-benchmarks/pull/456">small patch in the ANN Benchmark suite&lt;/a>, and a major kudos to their quick review!)&lt;/li>
+&lt;/ul>
+&lt;p>For this experiment, I focused entirely on optimizing my environment for performance, particularly around keeping the workload in memory. I used an &lt;a href="https://aws.amazon.com/ec2/instance-types/r7g/">r7gd.16xlarge&lt;/a> (64 vCPU, 512GM RAM) instance with my PostgreSQL data directory installed directly on the local NVMe. I used &lt;a href="https://www.postgresql.org/about/news/postgresql-15-released-2526/">PostgreSQL 15.3&lt;/a> and ran all of the tests locally, i.e. the benchmarking suite connected directly to the PostgreSQL instance over a local socket. I used the &lt;a href="https://github.com/erikbern/ann-benchmarks">ANN Benchmark&lt;/a> test framework (more on this below), ran one test at a time, and note that the framework runs a single query at a time.&lt;/p>
+&lt;p>For test data, I used the following known data sets from the &lt;a href="https://github.com/erikbern/ann-benchmarks">ANN Benchmark&lt;/a> suite. In the parenthesis, I use (data set size, vector dimensions):&lt;/p>
+&lt;ul>
+&lt;li>mnist-784-euclidean (60K, 784-dim)&lt;/li>
+&lt;li>sift-128-euclidean (1M, 128-dim)&lt;/li>
+&lt;li>gist-960-euclidean (1M, 960-dim)&lt;/li>
+&lt;li>dbpedia-openai-1000k-angular (1M, 1536-dim)&lt;/li>
+&lt;/ul>
+&lt;p>I had to &lt;a href="https://gist.github.com/jkatz/28a2f174effa987713926ce37bb5d304">write modules for ANN&lt;/a> for the HNSW implementation for pgvector where I did the following:&lt;/p>
+&lt;ul>
+&lt;li>Store the vectors in the table using &lt;code>PLAIN&lt;/code> storage, i.e. the data was not &lt;a href="https://www.postgresql.org/docs/current/storage-toast.html">TOASTed&lt;/a> but stored inline.&lt;/li>
+&lt;li>Built the index (and measured total build time + index size)&lt;/li>
+&lt;li>&lt;a href="https://www.postgresql.org/docs/current/pgprewarm.html">Prewarmed the shared buffer cache&lt;/a> to start with the table and index data in memory.&lt;/li>
+&lt;/ul>
+&lt;p>For PostgreSQL configuration, I had the following settings, with a focus on keeping the workload in memory:&lt;/p>
+&lt;ul>
+&lt;li>&lt;code>shared_buffers&lt;/code>: 128GB&lt;/li>
+&lt;li>&lt;code>effective_cache_size&lt;/code>: 256GB&lt;/li>
+&lt;li>&lt;code>work_mem&lt;/code>: 4GB&lt;/li>
+&lt;li>&lt;code>maintenance_work_mem&lt;/code>: 64GB&lt;/li>
+&lt;li>&lt;code>max_wal_size&lt;/code>: 20GB&lt;/li>
+&lt;li>&lt;code>wal_compression&lt;/code>: zstd&lt;/li>
+&lt;li>&lt;code>checkpoint_timeout&lt;/code>: 2h&lt;/li>
+&lt;li>&lt;code>jit&lt;/code>: off&lt;/li>
+&lt;/ul>
+&lt;p>Additionally, as parallelism in the index building process for &lt;code>ivfflat&lt;/code> is also a pgvector v0.5.0, I&amp;rsquo;ll note the following parallelism settings:&lt;/p>
+&lt;ul>
+&lt;li>&lt;code>max_worker_processes&lt;/code>: 128&lt;/li>
+&lt;li>&lt;code>max_parallel_workers&lt;/code>: 64&lt;/li>
+&lt;li>&lt;code>max_parallel_maintenance_workers&lt;/code>: 64&lt;/li>
+&lt;li>&lt;code>max_parallel_workers_per_gather&lt;/code>: 64&lt;/li>
+&lt;li>&lt;code>min_parallel_table_scan_size&lt;/code>: 1&lt;/li>
+&lt;/ul>
+&lt;p>Next, we need to consider what parameters we need to test and vary for testing the HNSW implementation. hnswlib as an explanation for &lt;a href="https://github.com/nmslib/hnswlib/blob/master/ALGO_PARAMS.md">how the different parameters&lt;/a> work, with my attempt to summarize them below:&lt;/p>
+&lt;ul>
+&lt;li>&lt;code>M&lt;/code>: An index building parameter that indicates how many bidirectional links (or paths) exist between each indexed element. This is a key piece in how we search over an HNSW index.&lt;/li>
+&lt;li>&lt;code>ef_construction&lt;/code>: An index building parameter that indicates how many nearest neighbors to check while adding an element to the index.&lt;/li>
+&lt;li>&lt;code>ef_search&lt;/code>: This is a search parameter that indicates the number of nearest neighbors to keep in a &amp;ldquo;dynamic list&amp;rdquo; while keeping the search. A large value can improve recall, usually with a tradeoff in performance. You need &lt;code>ef_search&lt;/code> be at least as big as your &lt;code>LIMIT&lt;/code> value.&lt;/li>
+&lt;/ul>
+&lt;p>To set up the actual code to test, given this is a moving target, I picked pgvector at commit &lt;a href="https://github.com/pgvector/pgvector/commit/600ca5a7">600ca5a7&lt;/a> to test both its ivfflat and HNSW implementation. To have an additional implementation to compare against, I also selected pg_embedding, another recent HNSW implementation targeted for PostgreSQL. In summary, I tested each implementation at the following commits, which we the latest when I ran these tests:&lt;/p>
+&lt;ul>
+&lt;li>&lt;code>pgvector&lt;/code> (ivfflat): &lt;a href="https://github.com/pgvector/pgvector/commit/600ca5a7">600ca5a7&lt;/a>&lt;/li>
+&lt;li>&lt;code>pgvector_hnsw&lt;/code> (hnsw) &lt;a href="https://github.com/pgvector/pgvector/commit/600ca5a7">600ca5a7&lt;/a>&lt;/li>
+&lt;li>&lt;code>pg_embedding&lt;/code> (hnsw) &lt;a href="https://github.com/pgvector/pgvector/commit/e1db3a5a">e1db3a5a&lt;/a>&lt;/li>
+&lt;/ul>
+&lt;p>Finally, we need test parameters. For &lt;code>ivfflat&lt;/code>, I used the &lt;a href="https://github.com/erikbern/ann-benchmarks/blob/main/ann_benchmarks/algorithms/pgvector/config.yml">existing configuration&lt;/a> in ANN Benchmark that varies lists and probes. For the HNSW algorithms, I took the test parameters from the mirrored test parameters from the other HNSW implementations, but only test a subset of construction parameters.&lt;/p>
+&lt;ul>
+&lt;li>Construction
+&lt;ul>
+&lt;li>M=12, ef_construction=60&lt;/li>
+&lt;li>M=16, ef_construction=40&lt;/li>
+&lt;li>M=24, ef_construction=40&lt;/li>
+&lt;/ul>
+&lt;/li>
+&lt;li>Search: ef_search=10, ef_search=20, ef_search=40, ef_search=80, ef_search=120, ef_search=200, ef_search=400, ef_search=600, ef_search=800,&lt;/li>
+&lt;/ul>
+&lt;p>(I do want to personally understand the impact of the construction parameters more, and will be running tests in the future that dive further into the variations. However, running the test suite does take time!)&lt;/p>
+&lt;p>Running these with the ANN Benchmark suite required creating &lt;a href="https://gist.github.com/jkatz/28a2f174effa987713926ce37bb5d304">new modules&lt;/a>. Credit to &lt;a href="https://github.com/pashkinelfe">Pavel Borisov&lt;/a> for most of the work on the pg_embedding HNSW test. I anticipate portions of this work to be proposed for the upstream ANN Benchmark project once HNSW is released for pgvector.&lt;/p>
+&lt;p>So, how did the tests go?&lt;/p>
+&lt;h2 id="results-and-analysis">Results and Analysis&lt;/h2>
+&lt;p>The first thing to emphasize is that these tests were conducted at a specific point in time in all the projects involved. The results today may not match the results tomorrow, but they provide a directional snapshot of where things stand today. I also wanted to use this as an exercise to highlight the tradeoffs on where you may want to use &lt;code>ivfflat&lt;/code> vs. &lt;code>hnsw&lt;/code>, as both indexes have utility.&lt;/p>
+&lt;p>For the rest of this section, we&amp;rsquo;ll look at the tests in each data set, and explore:&lt;/p>
+&lt;ul>
+&lt;li>The query performance / recall ratio&lt;/li>
+&lt;li>Index build time&lt;/li>
+&lt;li>Index size&lt;/li>
+&lt;/ul>
+&lt;h3 id="mnist-784-euclidean-60k-784-dim">mnist-784-euclidean (60K, 784-dim)&lt;/h3>
+&lt;p>This is my &amp;ldquo;sanity check&amp;rdquo; data set: it&amp;rsquo;s not too large (you can run tests quickly), but it also has higher dimensionality vector (you can see some of the oddities that come with higher dimensions). I have used it to successfully hunt down obvious performance regressions.&lt;/p>
+&lt;h4 id="pgvector-ivfflat">pgvector (ivfflat)&lt;/h4>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>Parameters&lt;/th>
+&lt;th>Build time (min)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>lists=100&lt;/td>
+&lt;td>0.19&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>lists=200&lt;/td>
+&lt;td>0.20&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>lists=400&lt;/td>
+&lt;td>0.24&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>lists=1000&lt;/td>
+&lt;td>0.54&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>lists=2000&lt;/td>
+&lt;td>0.91&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>lists=4000&lt;/td>
+&lt;td>1.56&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;p>&lt;strong>NOTE:&lt;/strong> I did not get the index size as I did not run the test with &lt;a href="https://github.com/erikbern/ann-benchmarks/pull/456">this patch&lt;/a> in place. However, the index size is roughly the same size as the vector column indexed in the table, plus overhead with the lists&lt;/p>
+&lt;h4 id="pgvector_hnsw-hnsw">pgvector_hnsw (hnsw)&lt;/h4>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>Parameters&lt;/th>
+&lt;th>Build time (min)&lt;/th>
+&lt;th>Index size (MB)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>M=12,ef_construction=60&lt;/td>
+&lt;td>0.87&lt;/td>
+&lt;td>234&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>M=16,ef_construction=40&lt;/td>
+&lt;td>1.02&lt;/td>
+&lt;td>234&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>M=24,ef_construction=40&lt;/td>
+&lt;td>1.45&lt;/td>
+&lt;td>234&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;h4 id="pg_embedding_hnsw-hnsw">pg_embedding_hnsw (hnsw)&lt;/h4>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>Parameters&lt;/th>
+&lt;th>Build time (min)&lt;/th>
+&lt;th>Index size (MB)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>M=12,ef_construction=60&lt;/td>
+&lt;td>1.28&lt;/td>
+&lt;td>234&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>M=16,ef_construction=40&lt;/td>
+&lt;td>1.16&lt;/td>
+&lt;td>234&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>M=24,ef_construction=40&lt;/td>
+&lt;td>1.16&lt;/td>
+&lt;td>234&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;p>&lt;img src="https://jkatz.github.io/images/mnist-784-euclidean.png" alt="mnist-784-euclidean.png">&lt;/p>
+&lt;p>Analysis:&lt;/p>
+&lt;ul>
+&lt;li>This is the case-in-point why you must measure both performance and recall. From a pure performance standpoint, pgvector&amp;rsquo;s &lt;code>ivfflat&lt;/code> index does have higher QPS (though not by much compared to pgvector&amp;rsquo;s &lt;code>hnsw&lt;/code>), but at a great expense with recall.&lt;/li>
+&lt;li>This is a small dataset, so we can&amp;rsquo;t draw too many conclusions. However, the results show that pgvector&amp;rsquo;s &lt;code>hnsw&lt;/code> implementation does have very strong performance / recall characteristics on this smaller data set.&lt;/li>
+&lt;/ul>
+&lt;h3 id="sift-128-euclidean-1m-128-dim">sift-128-euclidean (1M, 128-dim)&lt;/h3>
+&lt;p>This is another data set I like to run against earlier on in my testing, as it&amp;rsquo;s much larger (1 million vectors) but has lower dimensionality, so testing is generally faster. You&amp;rsquo;ll also start to see the effect of indexing these vectors at scale. Additionally, because this is lower dimensionality (I still find it amusing that 128 dimensions is &amp;ldquo;low&amp;rdquo;), you will see less of the higher dimensionality quirks in your searches.&lt;/p>
+&lt;h4 id="pgvector-ivfflat-1">pgvector (ivfflat)&lt;/h4>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>Parameters&lt;/th>
+&lt;th>Build time (min)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>lists=100&lt;/td>
+&lt;td>0.61&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>lists=200&lt;/td>
+&lt;td>0.61&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>lists=400&lt;/td>
+&lt;td>0.63&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>lists=1000&lt;/td>
+&lt;td>0.75&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>lists=2000&lt;/td>
+&lt;td>1.35&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>lists=4000&lt;/td>
+&lt;td>3.58&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;p>&lt;strong>NOTE:&lt;/strong> I did not get the index size as I did not run the test with &lt;a href="https://github.com/erikbern/ann-benchmarks/pull/456">this patch&lt;/a> in place. However, the index size is roughly the same size as the vector column indexed in the table, plus overhead with the lists&lt;/p>
+&lt;h4 id="pgvector_hnsw-hnsw-1">pgvector_hnsw (hnsw)&lt;/h4>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>Parameters&lt;/th>
+&lt;th>Build time (min)&lt;/th>
+&lt;th>Index size (MB)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>M=12,ef_construction=60&lt;/td>
+&lt;td>12.20&lt;/td>
+&lt;td>769&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>M=16,ef_construction=40&lt;/td>
+&lt;td>15.91&lt;/td>
+&lt;td>782&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>M=24,ef_construction=40&lt;/td>
+&lt;td>25.23&lt;/td>
+&lt;td>902&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;h4 id="pg_embedding_hnsw-hnsw-1">pg_embedding_hnsw (hnsw)&lt;/h4>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>Parameters&lt;/th>
+&lt;th>Build time (min)&lt;/th>
+&lt;th>Index size (MB)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>M=12,ef_construction=60&lt;/td>
+&lt;td>14.08&lt;/td>
+&lt;td>651&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>M=16,ef_construction=40&lt;/td>
+&lt;td>11.27&lt;/td>
+&lt;td>651&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>M=24,ef_construction=40&lt;/td>
+&lt;td>11.88&lt;/td>
+&lt;td>710&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;p>&lt;img src="https://jkatz.github.io/images/sift-128-euclidean.png" alt="sift-128-euclidean.png">&lt;/p>
+&lt;p>Analysis:&lt;/p>
+&lt;ul>
+&lt;li>Again, it&amp;rsquo;s crucial to look at both performance and recall. &lt;code>ivfflat&lt;/code> has high throughput, but on this test, it underperforms both &lt;code>hnsw&lt;/code> implementations when looking at the same relative recall.&lt;/li>
+&lt;li>pgvector&amp;rsquo;s &lt;code>hnsw&lt;/code> implementation achieves better performance and recall compared to the other two algorithms on this data set, though they all trend towards similar performance when increasing the search area.&lt;/li>
+&lt;li>&lt;code>ivfflat&lt;/code> is incredibly quick for building indexes (and note this leverages the parallel build feature in v0.5.0).&lt;/li>
+&lt;li>We can start to see some differences in index build time and size between the two HNSW implementations. On the surface, it appears increasing &lt;code>ef_construction&lt;/code> impacts pg_embedding&amp;rsquo;s HNSW implementation, whereas for pgvector it&amp;rsquo;s in increasing &lt;code>M&lt;/code>, but this would require a deeper investigation on varying the parameters to draw additional conclusions.&lt;/li>
+&lt;/ul>
+&lt;h3 id="gist-960-euclidean-1m-960-dim">gist-960-euclidean (1M, 960-dim)&lt;/h3>
+&lt;p>I like this dataset because this is where you start to see different implementations sweat. It has a nice size (1M vectors) and a higher dimensionality (960), so your index building and lookups are going to need to do more work.&lt;/p>
+&lt;p>I did not include the &lt;code>ivfflat&lt;/code> implementation in this test due to time so I could prioritize the final test.&lt;/p>
+&lt;h4 id="pgvector_hnsw-hnsw-2">pgvector_hnsw (hnsw)&lt;/h4>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>Parameters&lt;/th>
+&lt;th>Build time (min)&lt;/th>
+&lt;th>Index size (MB)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>M=12,ef_construction=60&lt;/td>
+&lt;td>41.37&lt;/td>
+&lt;td>4,316&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>M=16,ef_construction=40&lt;/td>
+&lt;td>60.20&lt;/td>
+&lt;td>7,688&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>M=24,ef_construction=40&lt;/td>
+&lt;td>112.04&lt;/td>
+&lt;td>7,812&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;h4 id="pg_embedding_hnsw-hnsw-2">pg_embedding_hnsw (hnsw)&lt;/h4>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>Parameters&lt;/th>
+&lt;th>Build time (min)&lt;/th>
+&lt;th>Index size (MB)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>M=12,ef_construction=60&lt;/td>
+&lt;td>50.48&lt;/td>
+&lt;td>3,906&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>M=16,ef_construction=40&lt;/td>
+&lt;td>45.77&lt;/td>
+&lt;td>3,906&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>M=24,ef_construction=40&lt;/td>
+&lt;td>49.01&lt;/td>
+&lt;td>3,906&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;p>&lt;img src="https://jkatz.github.io/images/gist-960-euclidean.png" alt="gist-960-euclidean.png">&lt;/p>
+&lt;p>Analysis:&lt;/p>
+&lt;ul>
+&lt;li>From both a performance/recall standpoint, pgvector&amp;rsquo;s HNSW implementation outperforms pg_embedding on this data set, though the gap closes for higher values of &lt;code>ef_search&lt;/code>.&lt;/li>
+&lt;li>pg_embedding has smaller indexes on this build, and pgvector&amp;rsquo;s index build time increased with larger values of &lt;code>M&lt;/code> whereas pg_embedding stayed flat. There&amp;rsquo;s likely wor&lt;/li>
+&lt;/ul>
+&lt;h3 id="dbpedia-openai-1000k-angular-1m-1536-dim">dbpedia-openai-1000k-angular (1M, 1536-dim)&lt;/h3>
+&lt;p>This is the dataset-du-jour that provides vector data that is similar to what you would find in an LLM, in this case, 1536 dimensional vectors. Unlike the other examples above, this data set uses a cosine distance operation.&lt;/p>
+&lt;h4 id="pgvector-ivfflat-2">pgvector (ivfflat)&lt;/h4>
+&lt;p>I only completed two runs, and would like to re-run it again during the next point-in-time evaluation of the algorithms.&lt;/p>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>Parameters&lt;/th>
+&lt;th>Build time (min)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>lists=200&lt;/td>
+&lt;td>16.55&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>lists=400&lt;/td>
+&lt;td>16.68&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;p>&lt;strong>NOTE:&lt;/strong> I did not get the index size as I did not run the test with &lt;a href="https://github.com/erikbern/ann-benchmarks/pull/456">this patch&lt;/a> in place. However, the index size is roughly the same size as the vector column indexed in the table, plus overhead with the lists&lt;/p>
+&lt;h4 id="pgvector_hnsw-hnsw-3">pgvector_hnsw (hnsw)&lt;/h4>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>Parameters&lt;/th>
+&lt;th>Build time (min)&lt;/th>
+&lt;th>Index size (MB)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>M=12,ef_construction=60&lt;/td>
+&lt;td>49.40&lt;/td>
+&lt;td>7,734&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>M=16,ef_construction=40&lt;/td>
+&lt;td>60.10&lt;/td>
+&lt;td>7,734&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>M=24,ef_construction=40&lt;/td>
+&lt;td>82.35&lt;/td>
+&lt;td>7,734&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;h4 id="pg_embedding_hnsw-hnsw-3">pg_embedding_hnsw (hnsw)&lt;/h4>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>Parameters&lt;/th>
+&lt;th>Build time (min)&lt;/th>
+&lt;th>Index size (MB)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>M=12,ef_construction=60&lt;/td>
+&lt;td>72.22&lt;/td>
+&lt;td>7,734&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>M=16,ef_construction=40&lt;/td>
+&lt;td>67.06&lt;/td>
+&lt;td>7,734&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>M=24,ef_construction=40&lt;/td>
+&lt;td>68.56&lt;/td>
+&lt;td>7,734&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;p>&lt;img src="https://jkatz.github.io/images/dbpedia-openai-1000k-angular.png" alt="dbpedia-openai-1000k-angular.png">&lt;/p>
+&lt;p>Analysis:&lt;/p>
+&lt;ul>
+&lt;li>pgvector&amp;rsquo;s HNSW implementation has better performance/recall ratio than the other algorithms by a fairly wide margin.&lt;/li>
+&lt;li>You can&amp;rsquo;t beat ivfflat in index building times: you can understand why it&amp;rsquo;s popular as a coarse quantizer. The index building times between pgvector&amp;rsquo;s HNSW and pg_embedding&amp;rsquo;s HNSW are more comparable here, which may be due to the implementation of the cosine distance functions.&lt;/li>
+&lt;li>I&amp;rsquo;m surprised the indexes are the same size; I need to drill into that more.&lt;/li>
+&lt;/ul>
+&lt;h2 id="whats-next">What&amp;rsquo;s next?&lt;/h2>
+&lt;p>As mentioned, this is just a first look at pgvector&amp;rsquo;s HNSW implementation at a specific commit (&lt;a href="https://github.com/pgvector/pgvector/commit/600ca5a7">600ca5a7&lt;/a>). Even since I ran the tests, there have been additional commits that iterate on its HNSW implementation. I&amp;rsquo;m personally excited to see where things land for the v0.5.0.&lt;/p>
+&lt;p>This is also to serve as a lesson that this is a fast moving space, not just for storing vector data in PostgreSQL, but in general. As I mentioned in &lt;a href="https://jkatz.github.io/post/postgres/vectors-json-postgresql/">Vectors are the new JSON in PostgreSQL&lt;/a>, while the vector itself is very old, modern processing research is still relatively new (~20 years) and we&amp;rsquo;re still finding new innovations in this space. There are still some proven research techniques that pgvector can adopt that will help in all areas: performance/recall, index sizes, and build times.&lt;/p>
+&lt;p>I think PostgreSQL will continue to be in a place where folks want to use it as a vector database, not just because it&amp;rsquo;s convenient, but because it can handle the demands of high performance workloads. The addition of the HNSW algorithm to the PostgreSQL extension ecosystem is one step, though a big step, in continuing to help people successfully store and search over vector data in PostgreSQL.&lt;/p></description></item><item><title>Vectors are the new JSON in PostgreSQL</title><link>https://jkatz.github.io/post/postgres/vectors-json-postgresql/</link><pubDate>Mon, 26 Jun 2023 00:00:00 +0000</pubDate><guid>https://jkatz.github.io/post/postgres/vectors-json-postgresql/</guid><description>&lt;p>&lt;a href="https://en.wikipedia.org/wiki/Row_and_column_vectors">Vectors&lt;/a> are the new &lt;a href="https://en.wikipedia.org/wiki/JSON">JSON&lt;/a>.&lt;/p>
 &lt;p>That in itself is an interesting statement, given vectors are a well-studied mathematical structure, and JSON is a data interchange format. And yet in the world of data storage and retrieval, both of these data representations have become the &lt;a href="https://en.wikipedia.org/wiki/Lingua_franca">lingua franca&lt;/a> of their domains and are either essential, or soon-to-be-essential, ingredients in modern application development. And if current trends continue (I think they will), vectors will be as crucial as JSON is for building applications.&lt;/p>
 &lt;p>Generative AI and all the buzz around it has caused developers to look for convenient ways to store and run queries against the outputs of these systems, with &lt;a href="https://www.postgresql.org/">PostgreSQL&lt;/a> being a natural choice for a lot of reasons. But even with the hype around generative AI, this is not a new data pattern. Vectors, as a mathematical concept, have been around for hundreds of years. Machine learning has over a half-century worth of research. The &lt;a href="https://www.postgresql.org/docs/current/arrays.html">array&lt;/a> &amp;ndash; the fundamental data structure for a vector &amp;ndash; is taught in most introductory computer science classes. Even PostgreSQL has had support for vector operations for over 20 years (more on that later)!&lt;/p>
 &lt;p>So, what is new? It&amp;rsquo;s the &lt;em>accessibility&lt;/em> of these AI/ML algorithms and how easy it is to represent some &amp;ldquo;real world&amp;rdquo; structure (text, images, video) as a vector and store it for some future use by an application. And again, while folks may point to the fact it&amp;rsquo;s not new to store the output of these systems (&amp;ldquo;embeddings&amp;rdquo;) in data storage systems, the emergent pattern is the &lt;em>accessibility&lt;/em> of being able to query and return this data in near real-time in almost any application.&lt;/p>
