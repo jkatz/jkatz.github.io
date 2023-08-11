@@ -84,7 +84,7 @@ To set up the actual code to test, given this is a moving target, I picked pgvec
 
 - `pgvector` (ivfflat): [600ca5a7](https://github.com/pgvector/pgvector/commit/600ca5a7)
 - `pgvector_hnsw` (hnsw) [600ca5a7](https://github.com/pgvector/pgvector/commit/600ca5a7)
-- `pg_embedding` (hnsw) [e1db3a5a](https://github.com/pgvector/pgvector/commit/e1db3a5a)
+- `pg_embedding` (hnsw) [e1db3a5a](https://github.com/neondatabase/pg_embedding/commit/e1db3a5a)
 
 Finally, we need test parameters. For `ivfflat`, I used the [existing configuration](https://github.com/erikbern/ann-benchmarks/blob/main/ann_benchmarks/algorithms/pgvector/config.yml) in ANN Benchmark that varies lists and probes. For the HNSW algorithms, I took the test parameters from the mirrored test parameters from the other HNSW implementations, but only test a subset of construction parameters.
 
