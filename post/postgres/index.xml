@@ -58,7 +58,7 @@
 &lt;ul>
 &lt;li>&lt;code>pgvector&lt;/code> (ivfflat): &lt;a href="https://github.com/pgvector/pgvector/commit/600ca5a7">600ca5a7&lt;/a>&lt;/li>
 &lt;li>&lt;code>pgvector_hnsw&lt;/code> (hnsw) &lt;a href="https://github.com/pgvector/pgvector/commit/600ca5a7">600ca5a7&lt;/a>&lt;/li>
-&lt;li>&lt;code>pg_embedding&lt;/code> (hnsw) &lt;a href="https://github.com/pgvector/pgvector/commit/e1db3a5a">e1db3a5a&lt;/a>&lt;/li>
+&lt;li>&lt;code>pg_embedding&lt;/code> (hnsw) &lt;a href="https://github.com/neondatabase/pg_embedding/commit/e1db3a5a">e1db3a5a&lt;/a>&lt;/li>
 &lt;/ul>
 &lt;p>Finally, we need test parameters. For &lt;code>ivfflat&lt;/code>, I used the &lt;a href="https://github.com/erikbern/ann-benchmarks/blob/main/ann_benchmarks/algorithms/pgvector/config.yml">existing configuration&lt;/a> in ANN Benchmark that varies lists and probes. For the HNSW algorithms, I took the test parameters from the mirrored test parameters from the other HNSW implementations, but only test a subset of construction parameters.&lt;/p>
 &lt;ul>
