@@ -49,7 +49,7 @@ CREATE INDEX ON vecs USING hnsw(embedding vector_l2_ops) WITH (m=16, ef_construc
 ```
 
 - `m`: (default: `16`; range: `2` to `100`) Indicates how many bidirectional links (or paths) exist between each indexed element. Setting this to a higher number can increase recall, but can also significantly increase index build time and may impact query performance.
-- `ef_construction`: (default: `64`; range: `4` to `1000`) Indicates how many nearest neighbors to check while adding an element to the index. Increasing this value can increase recall, but will also increase index build time. This value must also be at least double `m`, e.g. if `m` is `24` then `ef_construction` must be `48`.
+- `ef_construction`: (default: `64`; range: `4` to `1000`) Indicates how many nearest neighbors to check while adding an element to the index. Increasing this value can increase recall, but will also increase index build time. This value must also be at least double `m`, e.g. if `m` is `24` then `ef_construction` must be at least `48`.
 
 Note that as of this writing, you must specify the operator class to use with the `hnsw` index. For example, to use cosine distance with an HNSW index, you would use a command similar to the below:
 
@@ -206,7 +206,7 @@ Time measured in **seconds**.
 | -------- | ----- | ------- | ---------- | ---- | ------------- |
 | Serial   | 1724  | 168     | 1430       | 0.04 | 126           |
 | Parallel | 551   | 173     | 253        | 4    | 120           |
-| Speedup  | 3.1x  |         | 5.64       |      |               |
+| Speedup  | 3.1x  |         | 5.64x      |      |               |
 
 Again, in this experiment we see that we save the most time in the assignment phase, though note that the sort time increases roughly linearly as we add more vectors into the build.
 
