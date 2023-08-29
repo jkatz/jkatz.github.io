@@ -257,4 +257,4 @@ There's still [more to come](https://github.com/pgvector/pgvector/issues/27) in 
 
 And last but not least, but a huge THANK YOU to everyone who's worked on pgvector to date, whether its coding, testing, providing feedback, and contributing ideas. A very special thanks to [Andrew Kane](https://github.com/ankane) for his tireless work on the 0.5.0 release, and also many thanks to [Pavel Borisov](https://github.com/pashkinelfe) who did the work unlocked the performance gains ont he distance operations.
 
-As awesome as the 0.5.0 release of pgvector is, the best has yet to come. [Stay tuned](https://github.com/pgvector/pgvector!
+As awesome as the 0.5.0 release of pgvector is, the best has yet to come. [Stay tuned](https://github.com/pgvector/pgvector)!
