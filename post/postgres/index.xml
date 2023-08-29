@@ -25,7 +25,7 @@
 &lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">INDEX&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">ON&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vecs&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">USING&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">hnsw&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">embedding&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vector_l2_ops&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">WITH&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">m&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="mi">16&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">ef_construction&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="mi">64&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
 &lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;ul>
 &lt;li>&lt;code>m&lt;/code>: (default: &lt;code>16&lt;/code>; range: &lt;code>2&lt;/code> to &lt;code>100&lt;/code>) Indicates how many bidirectional links (or paths) exist between each indexed element. Setting this to a higher number can increase recall, but can also significantly increase index build time and may impact query performance.&lt;/li>
-&lt;li>&lt;code>ef_construction&lt;/code>: (default: &lt;code>64&lt;/code>; range: &lt;code>4&lt;/code> to &lt;code>1000&lt;/code>) Indicates how many nearest neighbors to check while adding an element to the index. Increasing this value can increase recall, but will also increase index build time. This value must also be at least double &lt;code>m&lt;/code>, e.g. if &lt;code>m&lt;/code> is &lt;code>24&lt;/code> then &lt;code>ef_construction&lt;/code> must be &lt;code>48&lt;/code>.&lt;/li>
+&lt;li>&lt;code>ef_construction&lt;/code>: (default: &lt;code>64&lt;/code>; range: &lt;code>4&lt;/code> to &lt;code>1000&lt;/code>) Indicates how many nearest neighbors to check while adding an element to the index. Increasing this value can increase recall, but will also increase index build time. This value must also be at least double &lt;code>m&lt;/code>, e.g. if &lt;code>m&lt;/code> is &lt;code>24&lt;/code> then &lt;code>ef_construction&lt;/code> must be at least &lt;code>48&lt;/code>.&lt;/li>
 &lt;/ul>
 &lt;p>Note that as of this writing, you must specify the operator class to use with the &lt;code>hnsw&lt;/code> index. For example, to use cosine distance with an HNSW index, you would use a command similar to the below:&lt;/p>
 &lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">INDEX&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">ON&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vecs&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">USING&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">hnsw&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">embedding&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vector_cosine_ops&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
@@ -207,7 +207,7 @@
 &lt;td>Speedup&lt;/td>
 &lt;td>3.1x&lt;/td>
 &lt;td>&lt;/td>
-&lt;td>5.64&lt;/td>
+&lt;td>5.64x&lt;/td>
 &lt;td>&lt;/td>
 &lt;td>&lt;/td>
 &lt;/tr>
