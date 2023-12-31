@@ -10,6 +10,14 @@ Below are a collection of talks and presentations I have given though the years.
 
 ## 2023
 
+- PGConf.EU 2023 (December 2023): [Vectors are the new JSON](https://www.postgresql.eu/events/pgconfeu2023/schedule/session/4592-vectors-are-the-new-json/) ([slides](https://www.postgresql.eu/events/pgconfeu2023/sessions/session/4592/slides/435/pgconfeu2023_vectors.pdf))
+- PGConf.EU 2023 (December 2023): [The journey towards active-active replication in PostgreSQL](https://www.postgresql.eu/events/pgconfeu2023/schedule/session/4783-the-journey-towards-active-active-replication-in-postgresql/) ([slides](https://www.postgresql.eu/events/pgconfeu2023/sessions/session/4783/slides/434/pgconfeu2023_active_active.pdf))
+- PGConf.EU 2023 (December 2023): [Community Panel - Postgres at Scale: Dealing With Challenging Workloads
+](https://www.postgresql.eu/events/pgconfeu2023/schedule/session/4688-community-panel-postgres-at-scale-dealing-with-challenging-workloads/)
+- re:Invent 2023 (November 2023): [Best practices for querying vector data for gen AI apps in PostgreSQL](https://www.youtube.com/watch?v=PhIC4JlYg7A&ab_channel=AWSEvents) ([project](https://github.com/pgvector/pgvector/))
+- re:Invent 2023 (November 2023): [AWS open source strategy and contributions for PostgreSQL](https://www.youtube.com/watch?v=kfJKR54arl0&ab_channel=AWSEvents)
+- Carnegie Mellon ML<=>DB Seminar Series (November 2023): [pgvector: Stylish Hierarchical Navigable Small World Indexes!](https://db.cs.cmu.edu/events/ml-db-2023-pgvector-stylish-hierarchical-navigable-small-world-indexes-jonathan-katz/) ([video](https://www.youtube.com/watch?v=YU66YlZW6dA&list=PLSE8ODhjZXjYVdJKka5g3xTKfPBITrxOu&index=11&ab_channel=CMUDatabaseGroup))
+- AWS Fireside Chat (September 2023): [Building ML capabilities with PostgreSQL and pgvector extension](https://www.youtube.com/watch?v=YHXOI6o3HxA&ab_channel=AWSDevelopers)
 - PGCon 2023 (May 2023): [Vectors are the new JSON](https://www.slideshare.net/jkatz05/vectors-are-the-new-json-in-postgresql) ([slides](https://www.slideshare.net/jkatz05/vectors-are-the-new-json-in-postgresql))
 - PGCon 2023 (May 2023): [The Journey Towards Active-Active Replication in PostgreSQL](https://www.pgcon.org/events/pgcon_2023/schedule/session/401-the-journey-towards-active-active-replication-in-postgresql/) ([video](https://www.youtube.com/watch?v=jPp4XIY4XRw&list=PLuJmmKtsV1dNtvBe_7uJQvzHTJKBQF2pu&index=18&ab_channel=PGCon) [slides](https://www.pgcon.org/events/pgcon_2023/sessions/session/401/slides/84/pgcon_2023_active_active.pdf))
 
