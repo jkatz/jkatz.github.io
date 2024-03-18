@@ -1,4 +1,700 @@
-<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Posts on Postgres on Jonathan Katz</title><link>https://jkatz.github.io/post/postgres/</link><description>Recent content in Posts on Postgres on Jonathan Katz</description><generator>Hugo -- gohugo.io</generator><language>en</language><lastBuildDate>Tue, 09 Jan 2024 00:00:00 +0000</lastBuildDate><atom:link href="https://jkatz.github.io/post/postgres/index.xml" rel="self" type="application/rss+xml"/><item><title>PGConf.dev: Why, what, and how you can participate</title><link>https://jkatz.github.io/post/postgres/why-pgconf-dev/</link><pubDate>Tue, 09 Jan 2024 00:00:00 +0000</pubDate><guid>https://jkatz.github.io/post/postgres/why-pgconf-dev/</guid><description>&lt;p>When I first began exploring how to get involved in the PostgreSQL community, the first event I heard of was &lt;a href="https://www.pgcon.org/">PGCon&lt;/a>. I was still in college when PGCon had started(!), and I did have &lt;a href="https://en.wikipedia.org/wiki/Fear_of_missing_out">FOMO&lt;/a> about not going (that said, I don&amp;rsquo;t think the phrase &amp;ldquo;FOMO&amp;rdquo; existed yet). Through the years, the timing of PGCon became very important: it served as a checkpoint between the in progress PostgreSQL major release (Beta 1 would have launched 1-2 weeks prior) and upcoming work on the new version of PostgreSQL. Additionally, because of the concentration of PostgreSQL contributors, both hackers and community builders, it was a great place to discuss how we can continue to make the PostgreSQL community better.&lt;/p>
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Posts on Postgres on Jonathan Katz</title><link>https://jkatz.github.io/post/postgres/</link><description>Recent content in Posts on Postgres on Jonathan Katz</description><generator>Hugo -- gohugo.io</generator><language>en</language><lastBuildDate>Mon, 18 Mar 2024 00:00:00 +0000</lastBuildDate><atom:link href="https://jkatz.github.io/post/postgres/index.xml" rel="self" type="application/rss+xml"/><item><title>Distributed queries for pgvector</title><link>https://jkatz.github.io/post/postgres/distributed-pgvector/</link><pubDate>Mon, 18 Mar 2024 00:00:00 +0000</pubDate><guid>https://jkatz.github.io/post/postgres/distributed-pgvector/</guid><description>&lt;p>The past few releases of &lt;a href="https://github.com/pgvector/pgvector">pgvector&lt;/a> have emphasized features that help to vertically scale, particularly around index build parallelism. Scaling vertically is convenient for many reasons, especially because it&amp;rsquo;s simpler to continue managing data that&amp;rsquo;s located within a single instance.&lt;/p>
+&lt;p>Performance of querying vector data tends to be memory-bound, meaning that the more vector data you can keep in memory, the faster your database will return queries. It&amp;rsquo;s also completely acceptable to not have your entire vector workload contained within memory, as long as you&amp;rsquo;re meeting your latency requirements.&lt;/p>
+&lt;p>However, they may be a point that you can&amp;rsquo;t vertically scale any further, such as not having an instance large enough to keep your entire vector dataset in memory. However, there may be a way to combine &lt;a href="https://www.postgresql.org">PostgreSQL&lt;/a> features with pgvector to create a multi-node system to run distributed, performant queries across multiple instances.&lt;/p>
+&lt;p>To see how this works, we&amp;rsquo;ll need to explore several features in PostgreSQL that help with segmenting and distributing data, including &lt;a href="https://www.postgresql.org/docs/current/ddl-partitioning.html">partitioning&lt;/a> and &lt;a href="https://www.postgresql.org/docs/current/ddl-foreign-data.html">foreign data wrappers&lt;/a>. We&amp;rsquo;ll see how we can use these features to run distributed queries with pgvector, and explore the &amp;ldquo;can we&amp;rdquo; / &amp;ldquo;should we&amp;rdquo; questions.&lt;/p>
+&lt;h2 id="partitioning-and-pgvector">Partitioning and pgvector&lt;/h2>
+&lt;p>Partitioning is a general database technique that lets you divide data in a single table over multiple tables, and is used for purposes such as archiving, segmenting by time, and reducing the overall portion of a data set that you need to search over. PostgreSQL supports three types of partitioning: &lt;a href="https://www.postgresql.org/docs/current/ddl-partitioning.html#DDL-PARTITIONING-OVERVIEW-RANGE">range&lt;/a>, &lt;a href="https://www.postgresql.org/docs/current/ddl-partitioning.html#DDL-PARTITIONING-OVERVIEW-LIST">list&lt;/a>, and &lt;a href="https://www.postgresql.org/docs/current/ddl-partitioning.html#DDL-PARTITIONING-OVERVIEW-HASH">hash&lt;/a>. You use list and range partitioning when you have a defined partition key (e.g. &lt;code>company_id&lt;/code> or &lt;code>start_date BETWEEN '2024-03-01' AND '2024-03-31&lt;/code>), whereas you use hash partitioning when you want to evenly distribute your data across partitions.&lt;/p>
+&lt;p>There are many considerations you must make before adopting a partitioning strategy, including understanding how your application will interact with your partitioned table and your partition management strategy. You also want to ensure you don&amp;rsquo;t create &amp;ldquo;too many partitions,&amp;rdquo; which is an upper bound that&amp;rsquo;s increased over the past several PostgreSQL releases (1000s is acceptable, depending on strategy).&lt;/p>
+&lt;p>&lt;a href="https://github.com/pgvector/pgvector/?tab=readme-ov-file#filtering">pgvector works natively with PostgreSQL partitioning&lt;/a>. Based upon the structure of your data and query patterns, you may choose to partition your data and build individual indexes over each partition as a way to enable &amp;ldquo;prefiltering&amp;rdquo; (your &lt;code>WHERE&lt;/code> clause) of your queries, for example:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">TABLE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">documents&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">id&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="nb">int&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">category_id&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="nb">int&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">embedding&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vector&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">1536&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">PARTITION&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">BY&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">HASH&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">category_id&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">TABLE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">documents_0&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">PARTITION&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">OF&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">documents&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">FOR&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">VALUES&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">WITH&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">MODULUS&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">2&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">REMAINDER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">0&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">TABLE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">documents_1&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">PARTITION&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">OF&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">documents&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">FOR&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">VALUES&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">WITH&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">MODULUS&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">2&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">REMAINDER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="c1">-- recursively creates an index on each partition
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span>&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">INDEX&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">ON&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">documents&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">USING&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">hnsw&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">embeddings&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vector_cosine_ops&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>However, the above example also shows one of the challenges with partitioning if you&amp;rsquo;re searching over a partition with either mixed data in your filter, or with multiple filters. Based on your search parameter value (&lt;code>hnsw.ef_search&lt;/code> or &lt;code>ivfflat.probes&lt;/code>), you may not return enough results from the index that match all of the filters. You can remedy this by increasing the values of &lt;code>hnsw.ef_search&lt;/code> or &lt;code>ivfflat.probes&lt;/code>; as of this writing, there is also work going into pgvector to add more prefiltering options.&lt;/p>
+&lt;p>Now that we&amp;rsquo;ve had a brief overview of partitioning, let&amp;rsquo;s look at foreign data wrappers.&lt;/p>
+&lt;h2 id="foreign-data-wrappers-and-postgres_fdw">Foreign data wrappers and &lt;code>postgres_fdw&lt;/code>&lt;/h2>
+&lt;p>&lt;a href="https://wiki.postgresql.org/wiki/Foreign_data_wrappers">Foreign data wrappers&lt;/a> (&lt;a href="https://wiki.postgresql.org/wiki/Foreign_data_wrappers">FDWs&lt;/a>), part of the &lt;a href="https://wiki.postgresql.org/wiki/SQL/MED">SQL/MED&lt;/a> standard, let you work with remote data sources from SQL. PostgreSQL has &lt;a href="https://wiki.postgresql.org/wiki/Foreign_data_wrappers">many different FDWs&lt;/a>, from the built-in &lt;a href="https://www.postgresql.org/docs/current/postgres-fdw.html">&lt;code>postgres_fdw&lt;/code>&lt;/a>, to others that can read/write to other databases or remote sources. Foreign data wrappers are used to run federated queries (queries across instances), push data into remote systems, and can be used to migrate data to PostgreSQL.&lt;/p>
+&lt;p>The &lt;code>postgres_fdw&lt;/code> lets you work with data across PostgreSQL databases. Since it&amp;rsquo;s introduction in &lt;a href="https://www.postgresql.org/docs/release/9.3.0/">PostgreSQL 9.3&lt;/a>, the &lt;code>postgres_fdw&lt;/code> has added features to make it possible to run distributed workloads, including different query pushdowns (executing queries on remote instances), convenience functions for loading remote schemas, and running queries asynchronous across remote instances. While the &lt;code>postgres_fdw&lt;/code> is a good solution for certain types of data federation, but is not yet a full solution for sharding, as sharding requires additional data management techniques (e.g., node management / rebalancing).&lt;/p>
+&lt;p>Using the &lt;code>postgres_fdw&lt;/code> in production requires security considerations, including authentication/authorization managemet, including on both the local and remote servers, and network management. I won&amp;rsquo;t be getting into these techniques here, but if you decide you want to use this in production, you&amp;rsquo;ll want to follow security best practices. At &lt;a href="https://2015.pgconf.eu/">PGConf EU 2015&lt;/a>, I gave a presentation on &lt;a href="https://www.slideshare.net/jkatz05/developing-and-deploying-apps-with-the-postgres-fdw">lessons learned deploying the &lt;code>postgres_fdw&lt;/code> in production&lt;/a>; most of those lessons still apply!&lt;/p>
+&lt;p>With partitioning and FDWs, we now have the tools to run distributed pgvector queries!&lt;/p>
+&lt;h2 id="distributed-queries-for-pgvector">Distributed queries for pgvector&lt;/h2>
+&lt;p>We can combine partitioning and the &lt;code>postgres_fdw&lt;/code> to run pgvector queries across multiple instances. For this experiment, I set up 3 instances:&lt;/p>
+&lt;ul>
+&lt;li>Two r7gd.4xlarge (16 vCPU, 128GB RAM) instances. These are called &lt;code>node1&lt;/code> and &lt;code>node2&lt;/code> in this post.&lt;/li>
+&lt;li>One &amp;ldquo;head node&amp;rdquo; that sends the data to the different systems, which I&amp;rsquo;ll refer to as &lt;code>head&lt;/code>. I used a smaller instance here, as most of the work is handled by &lt;code>node1&lt;/code> / &lt;code>node2&lt;/code>.&lt;/li>
+&lt;/ul>
+&lt;p>Additionally, to reduce latency, I kept all of these instances within the same availability zone, and I used the local disk (NVMe) for storage on &lt;code>node1&lt;/code> and &lt;code>node2&lt;/code>.&lt;/p>
+&lt;p>On &lt;code>node1&lt;/code> and &lt;code>node2&lt;/code>, I used the following applicable &lt;code>postgresql.conf&lt;/code> configuration parameters:&lt;/p>
+&lt;ul>
+&lt;li>&lt;code>effective_cache_size&lt;/code>: 64GB&lt;/li>
+&lt;li>&lt;code>maintenance_work_mem&lt;/code>: 32GB&lt;/li>
+&lt;li>&lt;code>max_parallel_maintenance_workers&lt;/code>: 15&lt;/li>
+&lt;li>&lt;code>max_parallel_workers&lt;/code>: 16&lt;/li>
+&lt;li>&lt;code>max_parallel_workers_per_gather&lt;/code>: 16&lt;/li>
+&lt;li>&lt;code>max_worker_processes&lt;/code>: 32&lt;/li>
+&lt;li>&lt;code>shared_buffers&lt;/code>: 32GB&lt;/li>
+&lt;li>&lt;code>work_mem&lt;/code>: 64MB&lt;/li>
+&lt;/ul>
+&lt;p>For all the tests, I used &lt;a href="https://github.com/pgvector/pgvector/commit/0d35a141">pgvector@0d35a141&lt;/a>, which is a few commits off from the code in the v0.6.2 release.&lt;/p>
+&lt;p>I ran two tests:&lt;/p>
+&lt;ol>
+&lt;li>&amp;ldquo;Can we&amp;rdquo;: determine if this method is even feasible.&lt;/li>
+&lt;li>&amp;ldquo;Should we&amp;rdquo;: demonstrate how federation technique &lt;a href="https://jkatz.github.io/post/postgres/pgvector-hnsw-performance/">impacts recall and query performance&lt;/a> using &lt;a href="https://github.com/erikbern/ann-benchmarks">ANN Benchmarks&lt;/a>.&lt;/li>
+&lt;/ol>
+&lt;h3 id="test-1-can-we---feasibility-of-pgvector-distributed-queries">Test 1: &amp;ldquo;Can we&amp;rdquo; - feasibility of pgvector distributed queries&lt;/h3>
+&lt;p>First, we need to set up the schema on each node. For this test, I ran the following commands on &lt;code>node1&lt;/code> and &lt;code>node2&lt;/code> in a database called &lt;code>vectors&lt;/code> with a user called &lt;code>distpgv&lt;/code> that has create permissions in that database:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">EXTENSION&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">IF&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">NOT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">EXISTS&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vector&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">TABLE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vectors&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">id&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">uuid&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">PRIMARY&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">KEY&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">DEFAULT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">gen_random_uuid&lt;/span>&lt;span class="p">(),&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">node_id&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="nb">int&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">NOT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">NULL&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">DEFAULT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="c1">-- change to 2 on node 2
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">embedding&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vector&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">768&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">ALTER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">TABLE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vectors&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">ALTER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">COLUMN&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">embedding&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">SET&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">STORAGE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">PLAIN&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>The following function is used to generate synthetic data:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">OR&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">REPLACE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">FUNCTION&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">public&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="n">generate_random_normalized_vector&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">dim&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="nb">integer&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">RETURNS&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vector&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">LANGUAGE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">plpgsql&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">AS&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="err">$&lt;/span>&lt;span class="k">function&lt;/span>&lt;span class="err">$&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">DECLARE&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">a&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="nb">real&lt;/span>&lt;span class="p">[];&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">mag&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="nb">real&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">x&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="nb">real&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">i&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="nb">int&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">BEGIN&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">SELECT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">array_agg&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">random&lt;/span>&lt;span class="p">()::&lt;/span>&lt;span class="nb">real&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">INTO&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">a&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">FROM&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">generate_series&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">dim&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">mag&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">public&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="n">vector_norm&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">a&lt;/span>&lt;span class="p">::&lt;/span>&lt;span class="n">vector&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">FOR&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">i&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">IN&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="p">..&lt;/span>&lt;span class="n">dim&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">LOOP&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">a&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="n">i&lt;/span>&lt;span class="p">]&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">a&lt;/span>&lt;span class="p">[&lt;/span>&lt;span class="n">i&lt;/span>&lt;span class="p">]&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="o">/&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">mag&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">END&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">LOOP&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">RETURN&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">a&lt;/span>&lt;span class="p">::&lt;/span>&lt;span class="n">vector&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">END&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="err">$&lt;/span>&lt;span class="k">function&lt;/span>&lt;span class="err">$&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>For this test, I ran the following on each instance to insert 5MM rows (2.5MM on each instance):&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="k">INSERT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">INTO&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vectors&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">embedding&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">SELECT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">generate_random_normalized_vector&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">768&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">FROM&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">generate_series&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="mi">2&lt;/span>&lt;span class="n">_500_000&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>Once the inserts were completed, I ran the following to build the index (adjust &lt;code>max_parallel_maintenance_workers&lt;/code> to the available cores on your environment):&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="k">SET&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">max_parallel_maintenance_workers&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">TO&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">16&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">INDEX&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">ON&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vectors&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">USING&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">hnsw&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">embedding&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vector_cosine_ops&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">WITH&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">ef_construction&lt;/span>&lt;span class="o">=&lt;/span>&lt;span class="mi">256&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>With this, the data is now set up on each of the nodes. Back on the &lt;code>head&lt;/code> instance, we need to set up the FDW and connections to the instances.&lt;/p>
+&lt;p>On &lt;code>head&lt;/code>, first install pgvector and the &lt;code>postgres_fdw&lt;/code>:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">EXTENSION&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">IF&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">NOT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">EXISTS&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vector&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">EXTENSION&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">IF&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">NOT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">EXISTS&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">postgres_fdw&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>The next set of SQL is the key bit that will allow us to run distributed pgvector queries. You&amp;rsquo;ll create two &amp;ldquo;servers,&amp;rdquo; which will tell PostgreSQL where your remote nodes are, and what their capabilities are:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">SERVER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vectors1&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">FOREIGN&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">DATA&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">WRAPPER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">postgres_fdw&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">OPTIONS&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">async_capable&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="s1">&amp;#39;true&amp;#39;&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">extensions&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="s1">&amp;#39;vector&amp;#39;&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">dbname&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="s1">&amp;#39;vectors&amp;#39;&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">host&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="s1">&amp;#39;&amp;lt;NODE1&amp;gt;&amp;#39;&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">SERVER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vectors2&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">FOREIGN&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">DATA&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">WRAPPER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">postgres_fdw&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">OPTIONS&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">async_capable&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="s1">&amp;#39;true&amp;#39;&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">extensions&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="s1">&amp;#39;vector&amp;#39;&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">dbname&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="s1">&amp;#39;vectors&amp;#39;&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">host&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="s1">&amp;#39;&amp;lt;NODE2&amp;gt;&amp;#39;&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>Aside from the connection parameters, there are two key options to know:&lt;/p>
+&lt;ul>
+&lt;li>&lt;code>async_capable&lt;/code>: This means that the remote server is capable of executing queries asynchronously. This lets us simultaneously execute pgvector queries on each node, instead of executing them one-at-a-time (serially).&lt;/li>
+&lt;li>&lt;code>extensions&lt;/code>: This indicates what extensions are available on the remote server. This allows us to pushdown the pgvector index lookups to the remote nodes.&lt;/li>
+&lt;/ul>
+&lt;p>Next, we need to add connection information for how a local PostgreSQL user will connect to the remote instances. Substitute &lt;code>local_user&lt;/code> for the user you create on your local instance:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">USER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">MAPPING&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">FOR&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">local_user&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">SERVER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vectors1&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">OPTIONS&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="k">user&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="s1">&amp;#39;pgvdist&amp;#39;&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">password&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="s1">&amp;#39;&amp;lt;SECUREPASSWORD&amp;gt;&amp;#39;&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">USER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">MAPPING&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">FOR&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">local_user&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">SERVER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vectors2&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">OPTIONS&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="k">user&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="s1">&amp;#39;pgvdist&amp;#39;&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">password&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="s1">&amp;#39;&amp;lt;SECUREPASSWORD&amp;gt;&amp;#39;&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>Finally, we&amp;rsquo;ll create a partitioned table, where each partition is a &amp;ldquo;&lt;a href="https://www.postgresql.org/docs/current/ddl-foreign-data.html">foreign table&lt;/a>,&amp;rdquo; or a reference to a table located on the remote server.&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">TABLE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vectors&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">id&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">uuid&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">node_id&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="nb">int&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">embedding&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vector&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">768&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="n">PARTITION&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">BY&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">LIST&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">node_id&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="c1">-- reference to the table on node 1
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span>&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">FOREIGN&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">TABLE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vectors_node1&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">PARTITION&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">OF&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vectors&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">FOR&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">VALUES&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">IN&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">SERVER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vectors1&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">OPTIONS&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="k">schema_name&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="s1">&amp;#39;public&amp;#39;&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">table_name&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="s1">&amp;#39;vectors&amp;#39;&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="c1">-- reference to the table on node 2
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span>&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">FOREIGN&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">TABLE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vectors_node2&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">PARTITION&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">OF&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vectors&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">FOR&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">VALUES&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">IN&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">2&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">SERVER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vectors2&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">OPTIONS&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="k">schema_name&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="s1">&amp;#39;public&amp;#39;&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">table_name&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="s1">&amp;#39;vectors&amp;#39;&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>Let&amp;rsquo;s test to see that we can query the remote tables. Below is an example of the output from an explain plan that counts all the rows across each node:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="k">EXPLAIN&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">SELECT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">count&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="o">*&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">FROM&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vectors&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>yields:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-fallback" data-lang="fallback">&lt;span class="line">&lt;span class="cl"> Aggregate (cost=2687700.00..2687700.01 rows=1 width=8)
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> -&amp;gt; Append (cost=100.00..2675200.00 rows=5000000 width=0)
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> -&amp;gt; Async Foreign Scan on vectors_node1 vectors_1 (cost=100.00..1325100.00 rows=2500000 width=0)
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> -&amp;gt; Async Foreign Scan on vectors_node2 vectors_2 (cost=100.00..1325100.00 rows=2500000 width=0)
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>We can see that the PostgreSQL query planner will attempt to perform an &amp;ldquo;async foreign scan,&amp;rdquo; which means it will run each query asynchronously on the individual nodes, and then determine the final results on the head node. When I used &lt;code>EXPLAIN ANALYZE&lt;/code>, I received the following output that showed the asynchronous execution:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-fallback" data-lang="fallback">&lt;span class="line">&lt;span class="cl"> Aggregate (cost=2687700.00..2687700.01 rows=1 width=8) (actual time=5755.761..5755.762 rows=1 loops=1)
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> -&amp;gt; Append (cost=100.00..2675200.00 rows=5000000 width=0) (actual time=0.603..5415.869 rows=5000000 loops=1)
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> -&amp;gt; Async Foreign Scan on vectors_node1 vectors_1 (cost=100.00..1325100.00 rows=2500000 width=0) (actual time=0.319..1192.879 rows=2500000 loops=1)
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> -&amp;gt; Async Foreign Scan on vectors_node2 vectors_2 (cost=100.00..1325100.00 rows=2500000 width=0) (actual time=0.303..1140.443 rows=2500000 loops=1)
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> Planning Time: 0.169 ms
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> Execution Time: 5756.769 ms
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>Now for the big test: running a distributed / federated query for pgvector. First, let&amp;rsquo;s create some test data. I ran this command using &lt;code>psql&lt;/code> to store the query vector in a session variable called &lt;code>v&lt;/code>:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="k">SELECT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">generate_random_normalized_vector&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">768&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">AS&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">v&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="err">\&lt;/span>&lt;span class="n">gset&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>I ran the following query to find the 10 nearest neighbors across all the nodes:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="k">SELECT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">id&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">node_id&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">:&lt;/span>&lt;span class="s1">&amp;#39;v&amp;#39;&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="o">&amp;lt;=&amp;gt;&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">embedding&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">AS&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">distance&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">FROM&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vectors&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">ORDER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">BY&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">distance&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">LIMIT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">10&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>which yielded:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-fallback" data-lang="fallback">&lt;span class="line">&lt;span class="cl"> id | node_id | distance
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">--------------------------------------+---------+---------------------
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> 9a88e75f-4a03-4964-9435-f6596087db7f | 2 | 0.20965892220421145
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> 251fe736-e06b-4a30-ad98-10132fd04db6 | 2 | 0.20981185523973567
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> 3d024d54-b01e-468a-9e3b-d0d63a46c599 | 2 | 0.21044588244644724
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> d03cd294-d6dc-4074-a614-a2514a64a035 | 1 | 0.2111870772354053
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> 9e5db921-c4f7-4bb8-b840-81d1c5fd4d02 | 2 | 0.21178618704635432
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> c6edadd6-c5d6-4fd3-9f15-8c6b67e01986 | 2 | 0.212410164619098
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> bc1822aa-3cfd-4614-8a87-d93909e00e49 | 2 | 0.2132984165340187
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> 1563e694-c84e-4ed3-9285-e0f33e5717c5 | 1 | 0.21351215879655328
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> c5616138-629b-4dac-97be-8da2a031593c | 1 | 0.21449695955189663
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> 6056e8f5-c52a-4f4d-8ca5-3c160d6116d3 | 2 | 0.21495852514977798
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>with the following execution plan:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-fallback" data-lang="fallback">&lt;span class="line">&lt;span class="cl">Limit (cost=200.01..206.45 rows=10 width=28) (actual time=18.171..18.182 rows=10 loops=1)
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> -&amp;gt; Merge Append (cost=200.01..3222700.01 rows=5000000 width=28) (actual time=18.169..18.179 rows=10 loops=1)
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> Sort Key: ((&amp;#39;$1&amp;#39;::vector &amp;lt;=&amp;gt; vectors.embedding))
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> -&amp;gt; Foreign Scan on vectors_node1 vectors_1 (cost=100.00..1586350.00 rows=2500000 width=28) (actual time=8.607..8.609 rows=2 loops=1)
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> -&amp;gt; Foreign Scan on vectors_node2 vectors_2 (cost=100.00..1586350.00 rows=2500000 width=28) (actual time=9.559..9.566 rows=9 loops=1)
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> Planning Time: 0.298 ms
+&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl"> Execution Time: 19.355 ms
+&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>Success! We can see that we were able to run the distributed query and get the most similarity vectors regardless of node they were on. Based on the timings, we also see that used the HNSW indexes that were available on each instance.&lt;/p>
+&lt;p>However, on closer inspection, we can see that we didn&amp;rsquo;t perform an async foreign scan, but executed each statement serially. Currently (based on my read of the PostgreSQL docs and code), PostgreSQL does not support async foreign scans with a &amp;ldquo;Merge Append&amp;rdquo; node (e.g., running multiple operations that require merging sort results, such as a K-NN sort). This may not matter if you don&amp;rsquo;t have many nodes, but could factor into larger, distributed data sets.&lt;/p>
+&lt;p>Now that we&amp;rsquo;ve answered &amp;ldquo;could we,&amp;rdquo; let&amp;rsquo;s look at one aspect of &amp;ldquo;should we&amp;rdquo; and measure recall across a distributed data set.&lt;/p>
+&lt;h2 id="test-2-should-we---ann-benchmarks-using-distributed-queries-for-pgvector">Test 2: &amp;ldquo;Should we&amp;rdquo; - ANN Benchmarks using distributed queries for pgvector&lt;/h2>
+&lt;p>For the next test, we&amp;rsquo;ll see how using this federation technique impacts recall and query performance. We want to test recall to ensure that distributing the data does not cause a regression in the quality of the results. Understanding query performance can help provide guidance on if/when we want to use this technique at all. I specifically did not test other aspects of vector storage (e.g., index size) as this was less of a factor in the differences in the environments tested in this example.&lt;/p>
+&lt;p>In this experiment, we&amp;rsquo;ll compare the 2-node federated setup in the previous example to a single instance (1-node, using a r7g.4xlarge) set up. I had to make a few modifications to the pgvector test in &lt;a href="https://github.com/erikbern/ann-benchmarks">ANN Benchmarks&lt;/a> to support distributed queries, specifically:&lt;/p>
+&lt;ul>
+&lt;li>Supporting creating tables and indexes on individual nodes (in this case, &lt;code>node1&lt;/code> and &lt;code>node2&lt;/code>)&lt;/li>
+&lt;li>Push setting &lt;code>hnsw.ef_search&lt;/code> down to individual nodes. As there isn&amp;rsquo;t a way to federate the values of session variables from &lt;code>head&lt;/code> to &lt;code>node1&lt;/code> and &lt;code>node2&lt;/code> (or if there is, I didn&amp;rsquo;t figure it out), I explicitly set the values using &lt;a href="https://www.postgresql.org/docs/current/sql-altersystem.html">&lt;code>ALTER SYSTEM&lt;/code>&lt;/a> and &lt;code>pg_reload_conf()&lt;/code>.&lt;/li>
+&lt;li>On the &lt;code>head&lt;/code> node, I created a partitioned table with a hash partitioning method with references to the remote nodes:&lt;/li>
+&lt;/ul>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">TABLE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">items&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">id&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="nb">int&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">embedding&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vector&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">PARTITION&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">BY&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">HASH&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">id&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="c1">-- reference to the table on node 1
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span>&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">FOREIGN&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">TABLE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">items_node1&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">PARTITION&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">OF&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">items&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">FOR&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">VALUES&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">WITH&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">MODULUS&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">2&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">REMAINDER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">0&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">SERVER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vectors1&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">OPTIONS&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="k">schema_name&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="s1">&amp;#39;public&amp;#39;&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">table_name&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="s1">&amp;#39;items&amp;#39;&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="c1">-- reference to the table on node 2
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span>&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">FOREIGN&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">TABLE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">items_node2&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">PARTITION&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">OF&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">items&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">FOR&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">VALUES&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">WITH&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">MODULUS&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">2&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">REMAINDER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">SERVER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vectors2&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">OPTIONS&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="k">schema_name&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="s1">&amp;#39;public&amp;#39;&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">table_name&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="s1">&amp;#39;items&amp;#39;&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>For all tests, I used the following build parameters:&lt;/p>
+&lt;ul>
+&lt;li>&lt;code>m&lt;/code>: 16&lt;/li>
+&lt;li>&lt;code>ef_construction&lt;/code>: 256&lt;/li>
+&lt;/ul>
+&lt;p>Below are the results from three different datasets available in ANN Benchmarks (for my thoughts on these datasets, &lt;a href="https://jkatz.github.io/post/postgres/pgvector-hnsw-performance/">please see this blog post&lt;/a>), followed by analysis:&lt;/p>
+&lt;ul>
+&lt;li>&lt;code>sift-128-euclidean&lt;/code> (1MM, 128-dim)&lt;/li>
+&lt;li>&lt;code>dbpedia-openai-1000k-angular&lt;/code> (1MM, 1536-dim)&lt;/li>
+&lt;li>&lt;code>gist-960-euclidean&lt;/code> (1MM, 960-dim)&lt;/li>
+&lt;/ul>
+&lt;p>Recall is measured from 0 to 1 (0% to 100% relevant results returned). Queries per second (QPS) is measured in how many queries complete per second :)&lt;/p>
+&lt;h4 id="sift-128-euclidean">sift-128-euclidean&lt;/h4>
+&lt;p>&lt;img alt="pgvector-distributed-sift128-recall.png" src="https://jkatz.github.io/images/pgvector-distributed-sift128-recall.png">&lt;/p>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>&lt;code>ef_search&lt;/code>&lt;/th>
+&lt;th>Recall (1-node)&lt;/th>
+&lt;th>Recall (2-node)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>10&lt;/td>
+&lt;td>0.776&lt;/td>
+&lt;td>0.833&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>20&lt;/td>
+&lt;td>0.884&lt;/td>
+&lt;td>0.922&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>40&lt;/td>
+&lt;td>0.953&lt;/td>
+&lt;td>0.973&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>80&lt;/td>
+&lt;td>0.986&lt;/td>
+&lt;td>0.994&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>120&lt;/td>
+&lt;td>0.994&lt;/td>
+&lt;td>0.998&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>200&lt;/td>
+&lt;td>0.998&lt;/td>
+&lt;td>0.999&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>400&lt;/td>
+&lt;td>1.000&lt;/td>
+&lt;td>1.000&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>800&lt;/td>
+&lt;td>1.000&lt;/td>
+&lt;td>1.000&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;p>&lt;img alt="pgvector-distributed-sift128-qps.png" src="https://jkatz.github.io/images/pgvector-distributed-sift128-qps.png">&lt;/p>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>&lt;code>ef_search&lt;/code>&lt;/th>
+&lt;th>QPS (1-node)&lt;/th>
+&lt;th>QPS (2-node)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>10&lt;/td>
+&lt;td>2111&lt;/td>
+&lt;td>338&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>20&lt;/td>
+&lt;td>1536&lt;/td>
+&lt;td>272&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>40&lt;/td>
+&lt;td>1031&lt;/td>
+&lt;td>206&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>80&lt;/td>
+&lt;td>644&lt;/td>
+&lt;td>137&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>120&lt;/td>
+&lt;td>474&lt;/td>
+&lt;td>109&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>200&lt;/td>
+&lt;td>276&lt;/td>
+&lt;td>84&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>400&lt;/td>
+&lt;td>157&lt;/td>
+&lt;td>59&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>800&lt;/td>
+&lt;td>86&lt;/td>
+&lt;td>36&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;h4 id="dbpedia-openai-1000k-angular">dbpedia-openai-1000k-angular&lt;/h4>
+&lt;p>&lt;img alt="pgvector-distributed-dbpedia1000k-recall.png" src="https://jkatz.github.io/images/pgvector-distributed-dbpedia1000k-recall.png">&lt;/p>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>&lt;code>ef_search&lt;/code>&lt;/th>
+&lt;th>Recall (1-node)&lt;/th>
+&lt;th>Recall (2-node)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>10&lt;/td>
+&lt;td>0.852&lt;/td>
+&lt;td>0.885&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>20&lt;/td>
+&lt;td>0.927&lt;/td>
+&lt;td>0.945&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>40&lt;/td>
+&lt;td>0.968&lt;/td>
+&lt;td>0.977&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>80&lt;/td>
+&lt;td>0.987&lt;/td>
+&lt;td>0.991&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>120&lt;/td>
+&lt;td>0.992&lt;/td>
+&lt;td>0.995&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>200&lt;/td>
+&lt;td>0.996&lt;/td>
+&lt;td>0.997&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>400&lt;/td>
+&lt;td>0.998&lt;/td>
+&lt;td>0.999&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>800&lt;/td>
+&lt;td>0.999&lt;/td>
+&lt;td>0.999&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;p>&lt;img alt="pgvector-distributed-dbpedia1000k-qps.png" src="https://jkatz.github.io/images/pgvector-distributed-dbpedia1000k-qps.png">&lt;/p>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>&lt;code>ef_search&lt;/code>&lt;/th>
+&lt;th>QPS (1-node)&lt;/th>
+&lt;th>QPS (2-node)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>10&lt;/td>
+&lt;td>1131&lt;/td>
+&lt;td>89&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>20&lt;/td>
+&lt;td>853&lt;/td>
+&lt;td>55&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>40&lt;/td>
+&lt;td>550&lt;/td>
+&lt;td>31&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>80&lt;/td>
+&lt;td>342&lt;/td>
+&lt;td>17&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>120&lt;/td>
+&lt;td>251&lt;/td>
+&lt;td>13&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>200&lt;/td>
+&lt;td>163&lt;/td>
+&lt;td>13&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>400&lt;/td>
+&lt;td>93&lt;/td>
+&lt;td>11&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>800&lt;/td>
+&lt;td>52&lt;/td>
+&lt;td>9&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;h4 id="gist-960-euclidean">gist-960-euclidean&lt;/h4>
+&lt;p>&lt;img alt="pgvector-distributed-gist960-recall.png" src="https://jkatz.github.io/images/pgvector-distributed-gist960-recall.png">&lt;/p>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>&lt;code>ef_search&lt;/code>&lt;/th>
+&lt;th>Recall (1-node)&lt;/th>
+&lt;th>Recall (2-node)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>10&lt;/td>
+&lt;td>0.509&lt;/td>
+&lt;td>0.584&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>20&lt;/td>
+&lt;td>0.652&lt;/td>
+&lt;td>0.733&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>40&lt;/td>
+&lt;td>0.783&lt;/td>
+&lt;td>0.852&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>80&lt;/td>
+&lt;td>0.883&lt;/td>
+&lt;td>0.932&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>120&lt;/td>
+&lt;td>0.925&lt;/td>
+&lt;td>0.962&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>200&lt;/td>
+&lt;td>0.960&lt;/td>
+&lt;td>0.981&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>400&lt;/td>
+&lt;td>0.987&lt;/td>
+&lt;td>0.995&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>800&lt;/td>
+&lt;td>0.995&lt;/td>
+&lt;td>0.998&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;p>&lt;img alt="pgvector-distributed-gist960-qps.png" src="https://jkatz.github.io/images/pgvector-distributed-gist960-qps.png">&lt;/p>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>&lt;code>ef_search&lt;/code>&lt;/th>
+&lt;th>QPS (1-node)&lt;/th>
+&lt;th>QPS (2-node)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>10&lt;/td>
+&lt;td>1107&lt;/td>
+&lt;td>134&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>20&lt;/td>
+&lt;td>782&lt;/td>
+&lt;td>89&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>40&lt;/td>
+&lt;td>509&lt;/td>
+&lt;td>54&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>80&lt;/td>
+&lt;td>302&lt;/td>
+&lt;td>30&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>120&lt;/td>
+&lt;td>218&lt;/td>
+&lt;td>24&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>200&lt;/td>
+&lt;td>144&lt;/td>
+&lt;td>21&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>400&lt;/td>
+&lt;td>81&lt;/td>
+&lt;td>17&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>800&lt;/td>
+&lt;td>45&lt;/td>
+&lt;td>13&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;p>There are two interesting observations from these runs:&lt;/p>
+&lt;ul>
+&lt;li>At lower values of &lt;code>hnsw.ef_search&lt;/code>, we observe an improvement in recall on the 2-node system up to 15%, which is not insignificant.&lt;/li>
+&lt;li>Overall we observe that QPS on the 1-node system is higher than the 2-node system. This is primarily due to network latency, though the serial execution of each foreign scan may impact (and will impact as the number of nodes in the system increase).&lt;/li>
+&lt;/ul>
+&lt;p>From this, it&amp;rsquo;d be easy to conclude that the distributed technique should not be used. However, the workload fit entirely into memory on the 1-node instance; if the 1-node was memory constrained and had to continuously fetch data from networked-attached storage, we would see different results.&lt;/p>
+&lt;p>Below I repeated the 1-node test, but I used the default PostgreSQL settings, including &lt;code>128MB&lt;/code> for &lt;code>shared_buffers&lt;/code>. This would memory constraint the system. I still used the local NVMe for storage. You can see the results of this test below:&lt;/p>
+&lt;h4 id="sift-128-euclidean-1">sift-128-euclidean&lt;/h4>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>&lt;code>ef_search&lt;/code>&lt;/th>
+&lt;th>QPS (1-node; PG defaults)&lt;/th>
+&lt;th>QPS (2-node)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>10&lt;/td>
+&lt;td>1030&lt;/td>
+&lt;td>338&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>20&lt;/td>
+&lt;td>710&lt;/td>
+&lt;td>272&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>40&lt;/td>
+&lt;td>450&lt;/td>
+&lt;td>206&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>80&lt;/td>
+&lt;td>266&lt;/td>
+&lt;td>137&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>120&lt;/td>
+&lt;td>193&lt;/td>
+&lt;td>109&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>200&lt;/td>
+&lt;td>119&lt;/td>
+&lt;td>84&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>400&lt;/td>
+&lt;td>69&lt;/td>
+&lt;td>59&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>800&lt;/td>
+&lt;td>39&lt;/td>
+&lt;td>36&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;h4 id="dbpedia-openai-1000k-angular-1">dbpedia-openai-1000k-angular&lt;/h4>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>&lt;code>ef_search&lt;/code>&lt;/th>
+&lt;th>QPS (1-node; PG defaults)&lt;/th>
+&lt;th>QPS (2-node)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>10&lt;/td>
+&lt;td>731&lt;/td>
+&lt;td>89&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>20&lt;/td>
+&lt;td>510&lt;/td>
+&lt;td>55&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>40&lt;/td>
+&lt;td>323&lt;/td>
+&lt;td>31&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>80&lt;/td>
+&lt;td>192&lt;/td>
+&lt;td>17&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>120&lt;/td>
+&lt;td>141&lt;/td>
+&lt;td>13&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>200&lt;/td>
+&lt;td>93&lt;/td>
+&lt;td>13&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>400&lt;/td>
+&lt;td>53&lt;/td>
+&lt;td>11&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>800&lt;/td>
+&lt;td>30&lt;/td>
+&lt;td>9&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;h4 id="gist-960-euclidean-1">gist-960-euclidean&lt;/h4>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>&lt;code>ef_search&lt;/code>&lt;/th>
+&lt;th>QPS (1-node; PG defaults)&lt;/th>
+&lt;th>QPS (2-node)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>10&lt;/td>
+&lt;td>712&lt;/td>
+&lt;td>134&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>20&lt;/td>
+&lt;td>482&lt;/td>
+&lt;td>89&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>40&lt;/td>
+&lt;td>306&lt;/td>
+&lt;td>54&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>80&lt;/td>
+&lt;td>179&lt;/td>
+&lt;td>30&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>120&lt;/td>
+&lt;td>128&lt;/td>
+&lt;td>24&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>200&lt;/td>
+&lt;td>81&lt;/td>
+&lt;td>21&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>400&lt;/td>
+&lt;td>44&lt;/td>
+&lt;td>17&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>800&lt;/td>
+&lt;td>25&lt;/td>
+&lt;td>13&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;p>Overall, while the 1-node test using the PostgreSQL defaults had higher QPS than the 2-node system, we see that the differences weren&amp;rsquo;t as large once the workload was memory constrained &amp;ndash; and in certain cases, the performance was comparable.&lt;/p>
+&lt;h2 id="conclusion">Conclusion&lt;/h2>
+&lt;p>Distributing a workload across multiple databases can be used to further scale a workload once you&amp;rsquo;re unable to scale it past a single instance. pgvector builds on PostgreSQL features that help with scaling vertically, and recently pgvector releases &lt;a href="https://aws.amazon.com/blogs/database/accelerate-hnsw-indexing-and-searching-with-pgvector-on-amazon-aurora-postgresql-compatible-edition-and-amazon-rds-for-postgresql/">have also shown that vector workloads can scale on PostgreSQL&lt;/a>.&lt;/p>
+&lt;p>While the experiments in this post show that it&amp;rsquo;s possible to distribute pgvector workloads across multiple instances &amp;ndash; and we can see benefits with recall &amp;ndash; there&amp;rsquo;s additional work that can simplify and help scale pgvector across multiple writable instances (e.g., pushdown session parameters, async execution across &amp;ldquo;merge append&amp;rdquo; nodes). If your workloads is read heavy, you can still use read replicas as a way to distribute traffic if your primary instance is saturated, but note that the entire data set is available on each instance.&lt;/p></description></item><item><title>PGConf.dev: Why, what, and how you can participate</title><link>https://jkatz.github.io/post/postgres/why-pgconf-dev/</link><pubDate>Tue, 09 Jan 2024 00:00:00 +0000</pubDate><guid>https://jkatz.github.io/post/postgres/why-pgconf-dev/</guid><description>&lt;p>When I first began exploring how to get involved in the PostgreSQL community, the first event I heard of was &lt;a href="https://www.pgcon.org/">PGCon&lt;/a>. I was still in college when PGCon had started(!), and I did have &lt;a href="https://en.wikipedia.org/wiki/Fear_of_missing_out">FOMO&lt;/a> about not going (that said, I don&amp;rsquo;t think the phrase &amp;ldquo;FOMO&amp;rdquo; existed yet). Through the years, the timing of PGCon became very important: it served as a checkpoint between the in progress PostgreSQL major release (Beta 1 would have launched 1-2 weeks prior) and upcoming work on the new version of PostgreSQL. Additionally, because of the concentration of PostgreSQL contributors, both hackers and community builders, it was a great place to discuss how we can continue to make the PostgreSQL community better.&lt;/p>
 &lt;p>As PostgreSQL grew, both in &lt;a href="https://jkatz.github.io/post/postgres/postgresql-2024/">functionality and popularity&lt;/a>, so did many of the events around PostgreSQL. PostgreSQL events went from being hosted in rented basements and academic spaces to hotels and event spaces. Even through all this, PGCon remained the same: everyone knew that once a year, they&amp;rsquo;d make the trek to the University of Ottawa to discuss all things PostgreSQL. This is not necessarily a bad thing &amp;ndash; after all, PostgreSQL &lt;a href="https://www.postgresql.org/docs/current/history.html">started as an academic project&lt;/a>, the community felt that it was time to evolve PGCon for several reasons:&lt;/p>
 &lt;ul>
 &lt;li>While we all grew accustomed to Ottawa, travel to and from Ottawa could be challenging. I spoke to community members who sometimes had to take 4(!) flights to get there. (While my travels were never that bad, I&amp;rsquo;m happy to tell the tale of how I got lost in rural Quebec without a GPS).&lt;/li>
@@ -86,9 +782,9 @@
 &lt;p>While these are thoughts for what PostgreSQL can do in 2024 and beyond, there&amp;rsquo;s so much PostgreSQL already does today. In fact, asking questions like &amp;ldquo;where is PostgreSQL going&amp;rdquo; does give us an opportunity to step back and reflect on all the progress PostgreSQL has made over the past several years while looking ahead on what is to come!&lt;/p></description></item><item><title>pgvector 0.5.0 Feature Highlights and HOWTOs</title><link>https://jkatz.github.io/post/postgres/pgvector-overview-0.5.0/</link><pubDate>Mon, 28 Aug 2023 00:00:00 +0000</pubDate><guid>https://jkatz.github.io/post/postgres/pgvector-overview-0.5.0/</guid><description>&lt;p>It&amp;rsquo;s here! &lt;a href="https://github.com/pgvector/pgvector/releases/tag/v0.5.0">pgvector 0.5.0&lt;/a> is released and has some incredible new features. &lt;a href="https://github.com/pgvector/pgvector">pgvector&lt;/a> is an open-source project that brings &lt;a href="https://jkatz.github.io/post/postgres/vectors-json-postgresql/">vector database capabilities to PostgreSQL&lt;/a>. The pgvector community is moving very rapidly on adding new features, so I thought it prudent to put together some highlights of the 0.5.0 release.&lt;/p>
 &lt;p>Here&amp;rsquo;s a quick list of highlights, though I encourage you read the rest in depth and explore on your own!&lt;/p>
 &lt;ul>
-&lt;li>&lt;a href="#new-index-type-hierarchical-navigable-small-worlds-hnsw">HNSW indexing support&lt;/a>&lt;/li>
-&lt;li>&lt;a href="#improved-performance-of-distance-functions">Faster distance calculations&lt;/a>&lt;/li>
-&lt;li>&lt;a href="#parallelization-of-ivfflat-index-builds">Parallel builds for &lt;code>ivfflat&lt;/code>&lt;/a>&lt;/li>
+&lt;li>&lt;a href="https://jkatz.github.io/post/postgres/pgvector-overview-0.5.0/#new-index-type-hierarchical-navigable-small-worlds-hnsw">HNSW indexing support&lt;/a>&lt;/li>
+&lt;li>&lt;a href="https://jkatz.github.io/post/postgres/pgvector-overview-0.5.0/#improved-performance-of-distance-functions">Faster distance calculations&lt;/a>&lt;/li>
+&lt;li>&lt;a href="https://jkatz.github.io/post/postgres/pgvector-overview-0.5.0/#parallelization-of-ivfflat-index-builds">Parallel builds for &lt;code>ivfflat&lt;/code>&lt;/a>&lt;/li>
 &lt;/ul>
 &lt;p>This is a big release, so let&amp;rsquo;s dive right in.&lt;/p>
 &lt;h2 id="new-index-type-hierarchical-navigable-small-worlds-hnsw">New index type: Hierarchical Navigable Small Worlds (&lt;code>hnsw&lt;/code>)&lt;/h2>
@@ -100,7 +796,7 @@
 &lt;li>&lt;strong>Concurrent inserts&lt;/strong>: Additionally, pgvector&amp;rsquo;s HNSW implementations lets you concurrently insert values into the index, making it easier to simultaneously load data from multiple sources.&lt;/li>
 &lt;/ul>
 &lt;p>In a previous post, I went into depth on the &lt;a href="https://jkatz.github.io/post/postgres/pgvector-hnsw-performance/">HNSW performance for pgvector&lt;/a> with benchmarks that compared it to &lt;code>ivfflat&lt;/code> and &lt;code>pg_embedding&lt;/code>&amp;rsquo;s HNSW implementation. The chart below shows the performance/recall tradeoffs on OpenAI-style embedding data using cosine distance (for &lt;a href="https://jkatz.github.io/post/postgres/pgvector-hnsw-performance/">full testing methodology&lt;/a> and the &lt;a href="https://github.com/erikbern/ann-benchmarks">ANN Benchmark framework&lt;/a>. Please read the &lt;a href="https://jkatz.github.io/post/postgres/pgvector-hnsw-performance/">previous post&lt;/a>) for more details on the test methodology and other considerations (index build time, index size on disk):&lt;/p>
-&lt;p>&lt;img src="https://jkatz.github.io/images/dbpedia-openai-1000k-angular.png" alt="dbpedia-openai-1000k-angular.png">&lt;/p>
+&lt;p>&lt;img alt="dbpedia-openai-1000k-angular.png" src="https://jkatz.github.io/images/dbpedia-openai-1000k-angular.png">&lt;/p>
 &lt;p>Instead of focusing on benchmarking in this post, I want to provide guidance on how to use the key parameters in &lt;code>hnsw&lt;/code> so you understand the ramifications on your performance/recall ratio and index build times.&lt;/p>
 &lt;p>In the &lt;a href="https://jkatz.github.io/post/postgres/pgvector-hnsw-performance/">previous post&lt;/a>, we reviewed the 3 parameters that are part of the HNSW algorithm. We&amp;rsquo;ll break them down to where they are applicable in pgvector&amp;rsquo;s &lt;code>hnsw&lt;/code> implementation:&lt;/p>
 &lt;h3 id="index-building-options">Index building options&lt;/h3>
@@ -540,7 +1236,7 @@
 &lt;/tr>
 &lt;/tbody>
 &lt;/table>
-&lt;p>&lt;img src="https://jkatz.github.io/images/mnist-784-euclidean.png" alt="mnist-784-euclidean.png">&lt;/p>
+&lt;p>&lt;img alt="mnist-784-euclidean.png" src="https://jkatz.github.io/images/mnist-784-euclidean.png">&lt;/p>
 &lt;p>Analysis:&lt;/p>
 &lt;ul>
 &lt;li>This is the case-in-point why you must measure both performance and recall. From a pure performance standpoint, pgvector&amp;rsquo;s &lt;code>ivfflat&lt;/code> index does have higher QPS (though not by much compared to pgvector&amp;rsquo;s &lt;code>hnsw&lt;/code>), but at a great expense with recall.&lt;/li>
@@ -638,7 +1334,7 @@
 &lt;/tr>
 &lt;/tbody>
 &lt;/table>
-&lt;p>&lt;img src="https://jkatz.github.io/images/sift-128-euclidean.png" alt="sift-128-euclidean.png">&lt;/p>
+&lt;p>&lt;img alt="sift-128-euclidean.png" src="https://jkatz.github.io/images/sift-128-euclidean.png">&lt;/p>
 &lt;p>Analysis:&lt;/p>
 &lt;ul>
 &lt;li>Again, it&amp;rsquo;s crucial to look at both performance and recall. &lt;code>ivfflat&lt;/code> has high throughput, but on this test, it underperforms both &lt;code>hnsw&lt;/code> implementations when looking at the same relative recall.&lt;/li>
@@ -703,7 +1399,7 @@
 &lt;/tr>
 &lt;/tbody>
 &lt;/table>
-&lt;p>&lt;img src="https://jkatz.github.io/images/gist-960-euclidean.png" alt="gist-960-euclidean.png">&lt;/p>
+&lt;p>&lt;img alt="gist-960-euclidean.png" src="https://jkatz.github.io/images/gist-960-euclidean.png">&lt;/p>
 &lt;p>Analysis:&lt;/p>
 &lt;ul>
 &lt;li>From both a performance/recall standpoint, pgvector&amp;rsquo;s HNSW implementation outperforms pg_embedding on this data set, though the gap closes for higher values of &lt;code>ef_search&lt;/code>.&lt;/li>
@@ -786,7 +1482,7 @@
 &lt;/tr>
 &lt;/tbody>
 &lt;/table>
-&lt;p>&lt;img src="https://jkatz.github.io/images/dbpedia-openai-1000k-angular.png" alt="dbpedia-openai-1000k-angular.png">&lt;/p>
+&lt;p>&lt;img alt="dbpedia-openai-1000k-angular.png" src="https://jkatz.github.io/images/dbpedia-openai-1000k-angular.png">&lt;/p>
 &lt;p>Analysis:&lt;/p>
 &lt;ul>
 &lt;li>pgvector&amp;rsquo;s HNSW implementation has better performance/recall ratio than the other algorithms by a fairly wide margin.&lt;/li>
