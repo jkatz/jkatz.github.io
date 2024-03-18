@@ -96,3 +96,11 @@ Below are a collection of talks and presentations I have given though the years.
 
 - PGConf.EU 2011 (October 2011): [Writing Django Extensions for PostgreSQL](https://www.postgresql.eu/events/pgconfeu2011/schedule/session/170-writing-django-extensions-for-postgresql/)
 - PGConf.EU 2011 (October 2011): [Accelerating Local Search with PostgreSQL 9.1](https://www.postgresql.eu/events/pgconfeu2011/schedule/session/171-accelerating-local-search-with-postgresql-91/)
+
+## 2010
+
+- PGDay.EU 2010 (December 2010): [How PostgreSQL 9 Makes Web Architecture Sweeter](https://www.postgresql.eu/events/pgday2010/schedule/session/81-how-postgresql-9-makes-web-architecture-sweeter/)
+
+## 2009
+
+- PGDay.EU 2009 (November 2009): [ORMs: Strengths, Weaknesses, and Building a PostgreSQL-specific ORM](https://2009.pgday.eu/jonathan_katz.html)
