@@ -8,6 +8,12 @@ author = "Jonathan Katz"
 
 Below are a collection of talks and presentations I have given though the years. This is not an exhaustive list; if you know of a presentation that you'd like to see added, please reach out to me!
 
+## 2024
+
+- PGConf.dev 2024 (May 2024): [Vectors: How to better support a nasty data type in PostgreSQL](https://www.pgevents.ca/events/pgconfdev2024/schedule/session/1-vectors-how-to-better-support-a-nasty-data-type-in-postgresql/)
+- SCaLE 21x (March 2024): [Vectors are the new JSON](https://www.socallinuxexpo.org/scale/21x/presentations/vectors-are-new-json) ([slides](https://www.slideshare.net/slideshows/vectors-are-the-new-json-in-postgresql-scale-21x/266847947))
+- AWS OnAir (March 2024) [How Amazon Aurora Optimized Reads improves performance of gen AI apps](https://www.youtube.com/watch?v=M3bJ-beMHoo&ab_channel=AWSEvents) ([video](https://www.youtube.com/watch?v=M3bJ-beMHoo&ab_channel=AWSEvents))
+
 ## 2023
 
 - PGConf.EU 2023 (December 2023): [Vectors are the new JSON](https://www.postgresql.eu/events/pgconfeu2023/schedule/session/4592-vectors-are-the-new-json/) ([slides](https://www.postgresql.eu/events/pgconfeu2023/sessions/session/4592/slides/435/pgconfeu2023_vectors.pdf))
