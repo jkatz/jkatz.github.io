@@ -1,4 +1,994 @@
-<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Posts on Postgres on Jonathan Katz</title><link>https://jkatz.github.io/post/postgres/</link><description>Recent content in Posts on Postgres on Jonathan Katz</description><generator>Hugo -- gohugo.io</generator><language>en</language><lastBuildDate>Wed, 20 Mar 2024 00:00:00 +0000</lastBuildDate><atom:link href="https://jkatz.github.io/post/postgres/index.xml" rel="self" type="application/rss+xml"/><item><title>Will PostgreSQL ever change its license?</title><link>https://jkatz.github.io/post/postgres/postgres-license-2024/</link><pubDate>Wed, 20 Mar 2024 00:00:00 +0000</pubDate><guid>https://jkatz.github.io/post/postgres/postgres-license-2024/</guid><description>&lt;p>(Disclosure: I&amp;rsquo;m on the &lt;a href="https://www.postgresql.org/developer/core/">PostgreSQL Core Team&lt;/a>, but what&amp;rsquo;s written in this post are my personal views and not official project statements&amp;hellip;unless I link to something that&amp;rsquo;s an official project statement ;)&lt;/p>
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Posts on Postgres on Jonathan Katz</title><link>https://jkatz.github.io/post/postgres/</link><description>Recent content in Posts on Postgres on Jonathan Katz</description><generator>Hugo -- gohugo.io</generator><language>en</language><lastBuildDate>Tue, 09 Apr 2024 00:00:00 +0000</lastBuildDate><atom:link href="https://jkatz.github.io/post/postgres/index.xml" rel="self" type="application/rss+xml"/><item><title>Scalar and binary quantization for pgvector vector search and storage</title><link>https://jkatz.github.io/post/postgres/pgvector-scalar-binary-quantization/</link><pubDate>Tue, 09 Apr 2024 00:00:00 +0000</pubDate><guid>https://jkatz.github.io/post/postgres/pgvector-scalar-binary-quantization/</guid><description>&lt;p>While many AI/ML embedding models generate vectors that provide large amounts of information by using high dimensionality, this can come at the cost of using more memory for searches and more overall storage. Both of these can have an impact on the cost and performance of a system that&amp;rsquo;s storing vectors, including when using &lt;a href="https://www.postgresql.org/">PostgreSQL&lt;/a> with the &lt;a href="https://github.com/pgvector/pgvector/">pgvector&lt;/a> for these use cases.&lt;/p>
+&lt;p>When I &lt;a href="https://jkatz05.com/talks/">talk&lt;/a> about &lt;a href="https://www.youtube.com/watch?v=PhIC4JlYg7A&amp;ab_channel=AWSEvents">vector search in PostgreSQL&lt;/a>, I have a slide that I like to call &amp;ldquo;no shortcuts without tradeoffs&amp;rdquo; that calls out the different challenges around searching vectors in a database. I first like to highlight that a 1,536 dimensional vector with 4-byte floating point (&lt;code>fp32&lt;/code>) dimensions requires 6KiB of storage. That may not seem like a lot, but storing 1,000,000 of these vectors in a PostgreSQL database requires 5.7GB of storage without any indexing. And again, that may not seem like a lot, but a single database row is closer to 600B of data (and typically even less than that) than 6KB.&lt;/p>
+&lt;p>The next point I talk about is compression: unfortunately, you just can&amp;rsquo;t compress a bunch of seemingly random floating point numbers. However, there are techniques to reduce the amount of information that you can store, from &lt;a href="https://en.wikipedia.org/wiki/Principal_component_analysis">principal component analysis&lt;/a> (aka &lt;a href="https://en.wikipedia.org/wiki/Principal_component_analysis">PCA&lt;/a>), which can reduce the overall dimensionality, to quantization techniques that can reduce the size or overall number of dimensions of a vector. These can reduce your overall storage and memory requirements &amp;ndash; and perhaps even improve performance in certain areas, but recall that I mentioned there are no shortcuts without tradeoffs. To use quantization for vector searches, we&amp;rsquo;ll have to give something up, whether it&amp;rsquo;s in the overall relevancy of our searches (&lt;a href="https://en.wikipedia.org/wiki/Precision_and_recall">recall&lt;/a>) or in some area of performance in our system.&lt;/p>
+&lt;p>There are three common quantization techniques around vector databases:&lt;/p>
+&lt;ul>
+&lt;li>&lt;strong>Scalar quantization&lt;/strong>, which reduces the overall size of the dimensions to a smaller data type (e.g. a 4-byte float to a 2-byte float or 1-byte integer).&lt;/li>
+&lt;li>&lt;strong>Binary quantization&lt;/strong>, which is a subset of scalar quantization that reduces the dimensions to a single bit (e.g. &lt;code>&amp;gt; 0&lt;/code> to &lt;code>1&lt;/code>, &lt;code>&amp;lt;=0&lt;/code> to &lt;code>0&lt;/code>).&lt;/li>
+&lt;li>&lt;strong>Product quantization&lt;/strong>, which uses a clustering technique to effectively remaps the original vector to a vector with smaller dimensionality and indexes that (e.g. reduce a vector from 128-dim to 8-dim).&lt;/li>
+&lt;/ul>
+&lt;p>There is already a lot of content available that does better exploration and explanation of these techniques than I will; instead I&amp;rsquo;ll focus on how to use 2 of these 3 techniques in the context of pgvector.&lt;/p>
+&lt;p>The &lt;a href="https://github.com/pgvector/pgvector/issues/508">upcoming pgvector 0.7.0&lt;/a> release is planning to include functionality that allows for you to use both scalar and binary quantization as part of your indexing strategy. Specifically, pgvector 0.7.0 adds support for indexing 2-byte floats (&lt;code>halfvec&lt;/code>) and bit/binary vectors (using the PostgreSQL &lt;a href="https://www.postgresql.org/docs/current/datatype-bit.html">&lt;code>bit&lt;/code>&lt;/a> data type). The 0.7.0 will also add support for sparse vectors via &lt;code>sparsevec&lt;/code>, but that will be for a future blog post.&lt;/p>
+&lt;p>&lt;strong>ASIDE&lt;/strong>: These quantization techniques also let you index vectors that are &lt;strong>larger than 2,000 dimensions&lt;/strong>, which has been a major request for pgvector. &lt;code>halfvec&lt;/code> can store up to 4,000 dimensions, &lt;code>bit&lt;/code> can store up to 64,000 dimensions, and &lt;code>sparsevec&lt;/code> can store up to 1,000 nonzero elements (which means it can store vectors with very high dimensionality).&lt;/p>
+&lt;p>Using existing pgvector functionality, such as &lt;a href="https://jkatz.github.io/post/postgres/pgvector-hnsw-performance/">HNSW indexing&lt;/a>, along with PostgreSQL features like &lt;a href="https://www.postgresql.org/docs/current/indexes-expressional.html">expression indexes&lt;/a>, we can explore how scalar and binary quantization can help reduce both space and memory consumption &amp;ndash; letting us scale vector workloads even further on PostgreSQL, understand what performance gains and tradeoffs we must make, how embedding models can impact results, and determine when it makes sense to use quantization.&lt;/p>
+&lt;h2 id="test-setup-and-system-configuration">Test setup and system configuration&lt;/h2>
+&lt;p>Before diving in, let&amp;rsquo;s do a quick review of how we want to test these techniques. I &lt;a href="https://jkatz.github.io/post/postgres/pgvector-hnsw-performance/">previously provided guidance on testing approximate nearest neighbor (ANN)&lt;/a> algorithms over vector indexes; below is a quick summary of what we will look at over the course of this testing:&lt;/p>
+&lt;ul>
+&lt;li>&lt;code>Index size&lt;/code>: This is a key metric with a quantization test, as we should be building indexes that are smaller than a full (or &amp;ldquo;flat&amp;rdquo;) vector index. The interesting data is &amp;ldquo;how much smaller,&amp;rdquo; and the impacts to the other metrics we&amp;rsquo;ll review.&lt;/li>
+&lt;li>&lt;code>Index build time&lt;/code>: How does quantization impact overall build time? If the build time is longer, do we gain enough in index size / recall / query performance that it&amp;rsquo;s OK to make that tradeoff? If the build time is shorter, do we lose anything in recall / query performance such that we should avoid quantization?&lt;/li>
+&lt;li>&lt;code>Queries per second&lt;/code> (QPS): How does quantization impact how many queries we can execute per second, or our overall throughput?&lt;/li>
+&lt;li>&lt;code>Latency&lt;/code> (p99): The time it takes to return a single result, but using a measurement that represents the 99th percentile (&amp;ldquo;very slow&amp;rdquo;) timing. This serves as an &amp;ldquo;upper bound&amp;rdquo; on our latency times.&lt;/li>
+&lt;li>&lt;code>Recall&lt;/code>: A measurement of the relevancy of our results - what percentage of the expected results do we return?&lt;/li>
+&lt;/ul>
+&lt;p>For the test itself, I used a &lt;code>r7gd.16xlarge&lt;/code> and stored the data on the local NVMe to rule out the impact of network latency. For these tests, I only ran on the ARM-based architecture of the Graviton3; as pgvector does leverage SIMD, exact timings may vary on different architectures.&lt;/p>
+&lt;p>I used PostgreSQL 16.2, with the following (relevant to this test) non-default configuration (in alphabetical order - thanks &lt;code>\dconfig&lt;/code>!):&lt;/p>
+&lt;ul>
+&lt;li>&lt;code>checkpoint_timeout&lt;/code>: 2h&lt;/li>
+&lt;li>&lt;code>effective_cache_size&lt;/code>: 256GB&lt;/li>
+&lt;li>&lt;code>jit&lt;/code>: off&lt;/li>
+&lt;li>&lt;code>maintenance_work_mem&lt;/code>: 64GB&lt;/li>
+&lt;li>&lt;code>max_parallel_maintenance_workers&lt;/code>: 63&lt;/li>
+&lt;li>&lt;code>max_parallel_workers&lt;/code>: 64&lt;/li>
+&lt;li>&lt;code>max_parallel_workers_per_gather&lt;/code>: 64&lt;/li>
+&lt;li>&lt;code>max_wal_size&lt;/code>: 20GB&lt;/li>
+&lt;li>&lt;code>max_worker_processes&lt;/code>: 128&lt;/li>
+&lt;li>&lt;code>shared_buffers&lt;/code>: 128GB&lt;/li>
+&lt;li>&lt;code>wal_compression&lt;/code>: zstd&lt;/li>
+&lt;li>&lt;code>work_mem&lt;/code>: 64MB&lt;/li>
+&lt;/ul>
+&lt;p>For testing, I used &lt;a href="https://github.com/erikbern/ann-benchmarks">ANN Benchmarks&lt;/a> with some modifications to the pgvector module to work with scalar and binary quantization. The modifications were purely to support scalar/binary quantization and would not make a material difference in performance values. I used the following datasets, though I won&amp;rsquo;t necessarily show the data from all of them:&lt;/p>
+&lt;ul>
+&lt;li>mnist-784-euclidean (60K, 784-dim)&lt;/li>
+&lt;li>sift-128-euclidean (1M, 128-dim)&lt;/li>
+&lt;li>gist-960-euclidean (1M, 960-dim)&lt;/li>
+&lt;li>dbpedia-openai-1000k-angular (1M, 1536-dim)&lt;/li>
+&lt;li>glove-25-angular (1.1M, 25-dim)&lt;/li>
+&lt;li>glove-100-angular (1.1M, 100-dim)&lt;/li>
+&lt;/ul>
+&lt;p>For this blog post, I&amp;rsquo;ll focus on results from &lt;code>sift-128-euclidean&lt;/code>, &lt;code>gist-960-euclidean&lt;/code>, and &lt;code>dbpedia-openai-1000k-angular&lt;/code>.&lt;/p>
+&lt;p>For the tests, I used HNSW indexing and used the following values:&lt;/p>
+&lt;ul>
+&lt;li>I fixed &lt;code>m&lt;/code> at &lt;code>16&lt;/code>, but ran tests with &lt;code>ef_construction&lt;/code> at 32, 64, 128, 256, 512&lt;/li>
+&lt;li>For each test, I varied &lt;code>ef_search&lt;/code> with 10, 20, 40, 80, 120, 200, 400, 800&lt;/li>
+&lt;/ul>
+&lt;p>Finally, for each test, I maintained the original table structure (i.e. storing the original / flat vector in the table) while quantizing the indexed vector.&lt;/p>
+&lt;p>We&amp;rsquo;ll first look individually at scalar and binary quantization with pgvector, followed by a summarization of findings and some recommendations.&lt;/p>
+&lt;h2 id="scalar-quantization-with-2-byte-fp16-floats-halfvec">Scalar quantization with 2-byte (fp16) floats (&lt;code>halfvec&lt;/code>)&lt;/h2>
+&lt;p>Scalar quantization is often the simplest technique to use to shrink vector index storage, as it&amp;rsquo;s just a matter of converting dimensions to a smaller data type (e.g. a 4-byte float to a 2-byte float). In some ways, quantize to a 2-byte float makes sense: when performing a distance operation, the biggest &amp;ldquo;differentiator&amp;rdquo; between two dimensions is in the more significant bits of data. If we marginally reduce the information to only care about those bits, we shouldn&amp;rsquo;t see much difference in recall.&lt;/p>
+&lt;p>The first thing needed for this test is to add support for 2-byte float scalar quantization when building the HNSW index. As mentioned, we can do this in PostgreSQL using an expression index. Below is an example of a table and HNSW index using cosine distance that uses scalar quantization to store a 3,072 dimensional vector, such as the ones found in the &lt;code>text-embedding-3-large&lt;/code> model:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">TABLE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">documents&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">id&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="nb">bigint&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">GENERATED&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">BY&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">DEFAULT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">AS&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">IDENTITY&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">PRIMARY&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">KEY&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">content&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="nb">text&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">embedding&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vector&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">3072&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">INDEX&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">ON&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">documents&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">USING&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">hnsw&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">((&lt;/span>&lt;span class="n">embedding&lt;/span>&lt;span class="p">::&lt;/span>&lt;span class="n">halfvec&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">3072&lt;/span>&lt;span class="p">))&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">halfvec_cosine_ops&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>Note that &lt;code>hnsw ((embedding::halfvec(3072)) halfvec_cosine_ops)&lt;/code> contains the expression (&lt;code>(embedding::halfvec(3072))&lt;/code>) that casts the full, 4-byte vector to become a 2-byte vector. Also note that we need to use a different operator class for the &lt;code>halfvec&lt;/code> data type.&lt;/p>
+&lt;p>For completeness, if you want to use scalar quantization with Euclidean / L2 distance, you&amp;rsquo;d use the following query:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">INDEX&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">ON&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">documents&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">USING&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">hnsw&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">((&lt;/span>&lt;span class="n">embedding&lt;/span>&lt;span class="p">::&lt;/span>&lt;span class="n">halfvec&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">3072&lt;/span>&lt;span class="p">))&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">halfvec_l2_ops&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>A query that would use scalar quantization would look similar to this:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="k">SELECT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">id&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">FROM&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">documents&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">ORDER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">BY&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">embedding&lt;/span>&lt;span class="p">::&lt;/span>&lt;span class="n">halfvec&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">3072&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="o">&amp;lt;=&amp;gt;&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="err">$&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="p">::&lt;/span>&lt;span class="n">halfvec&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">3072&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">LIMIT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">10&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>where &lt;code>$1&lt;/code> represented a parameter that&amp;rsquo;s a full vector being quantized to a 2-byte float.&lt;/p>
+&lt;p>Now, let&amp;rsquo;s see how scalar quantization impacts vector search in pgvector. We&amp;rsquo;ll first see the impact on index build times. In the table below, &lt;code>vector&lt;/code> represents the index with no quantization, whereas &lt;code>halfvec&lt;/code> contains the quantized vector. We&amp;rsquo;ll only show the &lt;code>ef_construction&lt;/code> value, as &lt;code>m&lt;/code> is fixed to &lt;code>16&lt;/code>:&lt;/p>
+&lt;h3 id="sift-128-euclidean">&lt;code>sift-128-euclidean&lt;/code>&lt;/h3>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>&lt;code>ef_construction&lt;/code>&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> size (MB)&lt;/th>
+&lt;th>&lt;code>halfvec&lt;/code> size (MB)&lt;/th>
+&lt;th>Space reduction&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> build-time (s)&lt;/th>
+&lt;th>&lt;code>halfvec&lt;/code> build-time (s)&lt;/th>
+&lt;th>Speedup&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>32&lt;/td>
+&lt;td>793&lt;/td>
+&lt;td>544&lt;/td>
+&lt;td>1.46x&lt;/td>
+&lt;td>33&lt;/td>
+&lt;td>31&lt;/td>
+&lt;td>1.06x&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>64&lt;/td>
+&lt;td>782&lt;/td>
+&lt;td>538&lt;/td>
+&lt;td>1.45x&lt;/td>
+&lt;td>37&lt;/td>
+&lt;td>34&lt;/td>
+&lt;td>1.09x&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>128&lt;/td>
+&lt;td>782&lt;/td>
+&lt;td>538&lt;/td>
+&lt;td>1.45x&lt;/td>
+&lt;td>44&lt;/td>
+&lt;td>40&lt;/td>
+&lt;td>1.10x&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>256&lt;/td>
+&lt;td>782&lt;/td>
+&lt;td>538&lt;/td>
+&lt;td>1.45x&lt;/td>
+&lt;td>58&lt;/td>
+&lt;td>51&lt;/td>
+&lt;td>1.14x&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>512&lt;/td>
+&lt;td>782&lt;/td>
+&lt;td>536&lt;/td>
+&lt;td>1.46x&lt;/td>
+&lt;td>88&lt;/td>
+&lt;td>74&lt;/td>
+&lt;td>1.19x&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;h3 id="gist-960-euclidean">&lt;code>gist-960-euclidean&lt;/code>&lt;/h3>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>&lt;code>ef_construction&lt;/code>&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> size (MB)&lt;/th>
+&lt;th>&lt;code>halfvec&lt;/code> size (MB)&lt;/th>
+&lt;th>Space reduction&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> build-time (s)&lt;/th>
+&lt;th>&lt;code>halfvec&lt;/code> build-time (s)&lt;/th>
+&lt;th>Speedup&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>32&lt;/td>
+&lt;td>7,811&lt;/td>
+&lt;td>2,603&lt;/td>
+&lt;td>3.00x&lt;/td>
+&lt;td>145&lt;/td>
+&lt;td>68&lt;/td>
+&lt;td>2.13x&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>64&lt;/td>
+&lt;td>7,684&lt;/td>
+&lt;td>2,561&lt;/td>
+&lt;td>3.00x&lt;/td>
+&lt;td>161&lt;/td>
+&lt;td>77&lt;/td>
+&lt;td>2.09x&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>128&lt;/td>
+&lt;td>7,680&lt;/td>
+&lt;td>2,560&lt;/td>
+&lt;td>3.00x&lt;/td>
+&lt;td>190&lt;/td>
+&lt;td>101&lt;/td>
+&lt;td>1.88x&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>256&lt;/td>
+&lt;td>7,678&lt;/td>
+&lt;td>2,559&lt;/td>
+&lt;td>3.00x&lt;/td>
+&lt;td>247&lt;/td>
+&lt;td>147&lt;/td>
+&lt;td>1.68x&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>512&lt;/td>
+&lt;td>7,678&lt;/td>
+&lt;td>2,559&lt;/td>
+&lt;td>3.00x&lt;/td>
+&lt;td>349&lt;/td>
+&lt;td>229&lt;/td>
+&lt;td>1.52x&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;h3 id="dbpedia-openai-1000k-angular">&lt;code>dbpedia-openai-1000k-angular&lt;/code>&lt;/h3>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>&lt;code>ef_construction&lt;/code>&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> size (MB)&lt;/th>
+&lt;th>&lt;code>halfvec&lt;/code> size (MB)&lt;/th>
+&lt;th>Space reduction&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> build-time (s)&lt;/th>
+&lt;th>&lt;code>halfvec&lt;/code> build-time (s)&lt;/th>
+&lt;th>Speedup&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>32&lt;/td>
+&lt;td>7,734&lt;/td>
+&lt;td>3,867&lt;/td>
+&lt;td>2.00x&lt;/td>
+&lt;td>244&lt;/td>
+&lt;td>77&lt;/td>
+&lt;td>3.17x&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>64&lt;/td>
+&lt;td>7,734&lt;/td>
+&lt;td>3,867&lt;/td>
+&lt;td>2.00x&lt;/td>
+&lt;td>264&lt;/td>
+&lt;td>90&lt;/td>
+&lt;td>2.93x&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>128&lt;/td>
+&lt;td>7,734&lt;/td>
+&lt;td>3,867&lt;/td>
+&lt;td>2.00x&lt;/td>
+&lt;td>301&lt;/td>
+&lt;td>115&lt;/td>
+&lt;td>2.62x&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>256&lt;/td>
+&lt;td>7,734&lt;/td>
+&lt;td>3,867&lt;/td>
+&lt;td>2.00x&lt;/td>
+&lt;td>377&lt;/td>
+&lt;td>163&lt;/td>
+&lt;td>2.31x&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>512&lt;/td>
+&lt;td>7,734&lt;/td>
+&lt;td>3,867&lt;/td>
+&lt;td>2.00x&lt;/td>
+&lt;td>508&lt;/td>
+&lt;td>254&lt;/td>
+&lt;td>2.00x&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;p>The above shows that using &lt;code>halfvec&lt;/code> to index a vector has both space savings and index build time benefits for vectors with larger dimensions. Without quantization, &lt;code>gist-960-euclidean&lt;/code> (960-dim) and &lt;code>dbpedia-openai-1000k-angular&lt;/code> (1536-dim) vectors can respectively only fit 2 and 1 vectors on an index page. Quantizing to a &lt;code>halfvec&lt;/code> allows to store up to respectively store 4 and 2 on a page, which lines up with th space saving numbers we see. With less pages required, it also makes sense that we&amp;rsquo;d see a build speedup, as pgvector doesn&amp;rsquo;t need to look up as many pages when placing a new vector into the index. The &lt;code>sift-128-euclidean&lt;/code> (128-dim) tests did showed space savings, the overall changes in build times were minimal, though importantly they did not show regression.&lt;/p>
+&lt;p>It seems like this means we should start using 2-byte float scalar quantization, right? We can&amp;rsquo;t make that determination just yet &amp;ndash; we need to understand the impact of these changes on query performance and recall. for the purposes of this blog, we&amp;rsquo;ll look at the query performance values at &lt;code>hnsw.ef_search&lt;/code> set to &lt;code>10&lt;/code>, &lt;code>40&lt;/code>, &lt;code>200&lt;/code>, and &lt;code>800&lt;/code>. 10 is the minimum value we can set to for this test (given the &lt;code>LIMIT 10&lt;/code>) and will give us a lower bound. 40 is the &lt;code>hnsw.ef_search&lt;/code> default for pgvector. At 200, we&amp;rsquo;d expect to see high recall, and at 800 we should be close to converging towards perfect recall (if we haven&amp;rsquo;t done so already).&lt;/p>
+&lt;p>Visualizing these results is a bit challenging, as there are several variables to consider (dataset, quantization, &lt;code>ef_construction&lt;/code>, &lt;code>ef_search&lt;/code>) along with several outputs (QPS, p99 latency, recall). For simplicity, we&amp;rsquo;ll consider the data at &lt;code>ef_construction=256&lt;/code>, as that is the build value I recommend for folks to use for index builds when using the parallel build functionality. You can see the results below:&lt;/p>
+&lt;h3 id="sift-128-euclidean--ef_construction256">&lt;code>sift-128-euclidean&lt;/code> @ &lt;code>ef_construction=256&lt;/code>&lt;/h3>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>&lt;code>hnsw.ef_search&lt;/code>&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> recall&lt;/th>
+&lt;th>&lt;code>halfvec&lt;/code> recall&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> QPS&lt;/th>
+&lt;th>&lt;code>halfvec&lt;/code> QPS&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> p99 latency (ms)&lt;/th>
+&lt;th>&lt;code>halfvec&lt;/code> p99 latency (ms)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>10&lt;/td>
+&lt;td>77.7%&lt;/td>
+&lt;td>77.5%&lt;/td>
+&lt;td>2,100&lt;/td>
+&lt;td>2,161&lt;/td>
+&lt;td>0.71&lt;/td>
+&lt;td>0.68&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>40&lt;/td>
+&lt;td>95.4%&lt;/td>
+&lt;td>95.4%&lt;/td>
+&lt;td>1,020&lt;/td>
+&lt;td>1,097&lt;/td>
+&lt;td>1.19&lt;/td>
+&lt;td>1.20&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>200&lt;/td>
+&lt;td>99.8%&lt;/td>
+&lt;td>99.8%&lt;/td>
+&lt;td>268&lt;/td>
+&lt;td>293&lt;/td>
+&lt;td>4.60&lt;/td>
+&lt;td>4.38&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>800&lt;/td>
+&lt;td>100.0%&lt;/td>
+&lt;td>100.0%&lt;/td>
+&lt;td>84&lt;/td>
+&lt;td>91&lt;/td>
+&lt;td>15.07&lt;/td>
+&lt;td>14.80&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;h3 id="gist-960-euclidean--ef_construction256">&lt;code>gist-960-euclidean&lt;/code> @ &lt;code>ef_construction=256&lt;/code>&lt;/h3>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>&lt;code>hnsw.ef_search&lt;/code>&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> recall&lt;/th>
+&lt;th>&lt;code>halfvec&lt;/code> recall&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> QPS&lt;/th>
+&lt;th>&lt;code>halfvec&lt;/code> QPS&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> p99 latency (ms)&lt;/th>
+&lt;th>&lt;code>halfvec&lt;/code> p99 latency (ms)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>10&lt;/td>
+&lt;td>50.4%&lt;/td>
+&lt;td>50.1%&lt;/td>
+&lt;td>1,114&lt;/td>
+&lt;td>1,207&lt;/td>
+&lt;td>1.36&lt;/td>
+&lt;td>1.21&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>40&lt;/td>
+&lt;td>78.0%&lt;/td>
+&lt;td>78.1%&lt;/td>
+&lt;td>513&lt;/td>
+&lt;td>579&lt;/td>
+&lt;td>2.64&lt;/td>
+&lt;td>2.30&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>200&lt;/td>
+&lt;td>96.0%&lt;/td>
+&lt;td>96.0%&lt;/td>
+&lt;td>135&lt;/td>
+&lt;td>156&lt;/td>
+&lt;td>8.70&lt;/td>
+&lt;td>7.49&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>800&lt;/td>
+&lt;td>99.6%&lt;/td>
+&lt;td>99.6%&lt;/td>
+&lt;td>41&lt;/td>
+&lt;td>47&lt;/td>
+&lt;td>29.20&lt;/td>
+&lt;td>25.44&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;h3 id="dbpedia-openai-1000k-angular--ef_construction256">&lt;code>dbpedia-openai-1000k-angular&lt;/code> @ &lt;code>ef_construction=256&lt;/code>&lt;/h3>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>&lt;code>hnsw.ef_search&lt;/code>&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> recall&lt;/th>
+&lt;th>&lt;code>halfvec&lt;/code> recall&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> QPS&lt;/th>
+&lt;th>&lt;code>halfvec&lt;/code> QPS&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> p99 latency (ms)&lt;/th>
+&lt;th>&lt;code>halfvec&lt;/code> p99 latency (ms)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>10&lt;/td>
+&lt;td>85.1%&lt;/td>
+&lt;td>85.2%&lt;/td>
+&lt;td>1,162&lt;/td>
+&lt;td>1,163&lt;/td>
+&lt;td>1.40&lt;/td>
+&lt;td>1.21&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>40&lt;/td>
+&lt;td>96.8%&lt;/td>
+&lt;td>96.8%&lt;/td>
+&lt;td>567&lt;/td>
+&lt;td>578&lt;/td>
+&lt;td>2.70&lt;/td>
+&lt;td>2.61&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>200&lt;/td>
+&lt;td>99.6%&lt;/td>
+&lt;td>99.6%&lt;/td>
+&lt;td>156&lt;/td>
+&lt;td>163&lt;/td>
+&lt;td>9.01&lt;/td>
+&lt;td>8.59&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>800&lt;/td>
+&lt;td>99.9%&lt;/td>
+&lt;td>99.9%&lt;/td>
+&lt;td>48&lt;/td>
+&lt;td>51&lt;/td>
+&lt;td>30.50&lt;/td>
+&lt;td>28.49&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;p>These are very good results for 2-byte float quantization with &lt;code>halfvec&lt;/code>. In addition to the improved build performance, we see that (at least at &lt;code>ef_construction=256&lt;/code>) the recall values between &lt;code>vector&lt;/code> and &lt;code>halfvec&lt;/code> are nearly idenical, and query performance is identical or slightly better (particularly with latency) with &lt;code>halfvec&lt;/code>.&lt;/p>
+&lt;p>Across all the tests I ran with the ANN Benchmark datasets listed above, I saw similar results. This makes a strong case that moving forward, you should first attempt to use HNSW with 2-byte float quantization, as you&amp;rsquo;ll save space and improve index build times while maintaining comparable performance to storing the full vector! If you&amp;rsquo;re not seeing the recall that you want, you can increase &lt;code>m&lt;/code>/&lt;code>ef_construction&lt;/code>, or fall back to using the full 4-byte float vector in your index.&lt;/p>
+&lt;p>Let&amp;rsquo;s now explore binary quantization.&lt;/p>
+&lt;h2 id="binary-quantization">Binary quantization&lt;/h2>
+&lt;p>Binary quantization is a more extreme quantization technique: it can reduce the full value of the dimension of a vector to a single bit of information. Specifically, binary quantization will reduce any positive value to &lt;code>1&lt;/code>, and any zero or negative value to &lt;code>0&lt;/code>. This can certainly lead to a huge reduction in memory/storage utilization, and likely query performance, as you&amp;rsquo;re storing much more data on a single page. However, this can have a notable impact on recall, as we&amp;rsquo;ll see in the experiments below.&lt;/p>
+&lt;p>I&amp;rsquo;m going to spoil one of the experiments: using binary quantization on its own can lead to poor recall if there&amp;rsquo;s not enough bit-diversity in your vectors. Typically, you&amp;rsquo;ll see more diversity amongst vectors with higher dimensionality, as these vectors are more likely to have varied bits. However, you can improve recall by &amp;ldquo;reranking,&amp;rdquo; i.e. you use binary quantization to narrow down your set of vectors, and then you reorder the reduced set of vectors by using the original (flat) vectors stored in the table.&lt;/p>
+&lt;p>First, let&amp;rsquo;s see how we can set up a table to support binary quantization. We&amp;rsquo;ll first look at the results of building a HNSW index that stores binary quantized vectors, and then compare results between using binary quantization with and without re-ranking.&lt;/p>
+&lt;p>Recall that pgvector ultimately gets support for binary quantization through supporting vector operations through the PostgreSQL &lt;code>bit&lt;/code> type. The pgvector 0.7.0 release provides two different bitwise distance functions: &lt;a href="https://en.wikipedia.org/wiki/Jaccard_index">Jaccard&lt;/a> (&lt;code>&amp;lt;%&amp;gt;&lt;/code>) and &lt;a href="https://en.wikipedia.org/wiki/Hamming_distance">Hamming distance&lt;/a> (&lt;code>&amp;lt;~&amp;gt;&lt;/code>). For these tests, I chose the Hamming distance function due to its performance characteristics, though I plan/hope to go into a deeper dive on these two options in a future blog post.&lt;/p>
+&lt;p>Below is an example of how you can create a table and index that supports binary quantization and Hamming distance:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">TABLE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">documents&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">id&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="nb">bigint&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">GENERATED&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">BY&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">DEFAULT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">AS&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">IDENTITY&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">PRIMARY&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">KEY&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">content&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="nb">text&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="n">embedding&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">vector&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">3072&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">CREATE&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">INDEX&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">ON&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">documents&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">USING&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">hnsw&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">((&lt;/span>&lt;span class="n">quantize_binary&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">embedding&lt;/span>&lt;span class="p">)::&lt;/span>&lt;span class="nb">bit&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">3072&lt;/span>&lt;span class="p">))&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">bit_hamming_ops&lt;/span>&lt;span class="p">);&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>Again, notice we use a PostgreSQL expression index to quantize the embedding, and explicitly cast the bit dimensionality. That final cast is important: &lt;code>quantize_binary&lt;/code> just returns a bit string, and pgvector index building needs to detect and explicit dimension.&lt;/p>
+&lt;p>The following query is how to search the index using binary quantization:&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="k">SELECT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">id&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">FROM&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">documents&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">ORDER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">BY&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">quantize_binary&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">embedding&lt;/span>&lt;span class="p">)::&lt;/span>&lt;span class="nb">bit&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">3072&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="o">&amp;lt;~&amp;gt;&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">quantize_binary&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="err">$&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">LIMIT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">10&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>where $1 represents a parameterized value that is a &lt;code>vector&lt;/code> type.&lt;/p>
+&lt;p>As mentioned earlier, we&amp;rsquo;ll also run an experiment that involves re-ranking the results before returning them. The following query does exactly that; note that the subquery has a higher limit, but it will ultimately be governed by the value of &lt;code>hnsw.ef_search&lt;/code> (you can always set the &lt;code>LIMIT&lt;/code> to be the value of &lt;code>hnsw.ef_search&lt;/code>).&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="k">SELECT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">i&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="n">id&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">FROM&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">SELECT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">id&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">embedding&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="o">&amp;lt;=&amp;gt;&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="err">$&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">AS&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">distance&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">FROM&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">items&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">ORDER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">BY&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">quantize_binary&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">embedding&lt;/span>&lt;span class="p">)::&lt;/span>&lt;span class="nb">bit&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">3072&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="o">&amp;lt;~&amp;gt;&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">quantize_binary&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="err">$&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">LIMIT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">800&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="c1">-- bound by hnsw.ef_search
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">i&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">ORDER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">BY&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">i&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="n">distance&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">LIMIT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">10&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>where $1 represents a parameterized value that is a &lt;code>vector&lt;/code> type. Note that in the SELECT list of the subqery, there is the &lt;code>embedding &amp;lt;=&amp;gt; $1 AS distance&lt;/code> expression: this performs the distance calculation that is ultimately used in the rerank. This example uses cosine distance, but you can choose your preferred distance metric.&lt;/p>
+&lt;p>Now, let&amp;rsquo;s see how binary quantization with and without reanking impacts vector search in pgvector. As before, we&amp;rsquo;ll first see the impact on index build times. In the table below, &lt;code>vector&lt;/code> represents the index with no quantization, whereas &lt;code>bit&lt;/code> contains the binary quantized vector. Note that reranking only impacts the query itself, so we don&amp;rsquo;t have to show multiple sets of build times. We&amp;rsquo;ll only show the &lt;code>ef_construction&lt;/code> value, as &lt;code>m&lt;/code> is fixed to &lt;code>16&lt;/code>:&lt;/p>
+&lt;h3 id="sift-128-euclidean-1">&lt;code>sift-128-euclidean&lt;/code>&lt;/h3>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>&lt;code>ef_construction&lt;/code>&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> size (MB)&lt;/th>
+&lt;th>&lt;code>bit&lt;/code> size (MB)&lt;/th>
+&lt;th>Space reduction&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> build-time (s)&lt;/th>
+&lt;th>&lt;code>bit&lt;/code> build-time (s)&lt;/th>
+&lt;th>Speedup&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>32&lt;/td>
+&lt;td>793&lt;/td>
+&lt;td>304&lt;/td>
+&lt;td>2.61x&lt;/td>
+&lt;td>33&lt;/td>
+&lt;td>28&lt;/td>
+&lt;td>1.18x&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>64&lt;/td>
+&lt;td>782&lt;/td>
+&lt;td>298&lt;/td>
+&lt;td>2.62x&lt;/td>
+&lt;td>37&lt;/td>
+&lt;td>31&lt;/td>
+&lt;td>1.19x&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>128&lt;/td>
+&lt;td>782&lt;/td>
+&lt;td>298&lt;/td>
+&lt;td>2.62x&lt;/td>
+&lt;td>44&lt;/td>
+&lt;td>37&lt;/td>
+&lt;td>1.19x&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>256&lt;/td>
+&lt;td>782&lt;/td>
+&lt;td>298&lt;/td>
+&lt;td>2.62x&lt;/td>
+&lt;td>58&lt;/td>
+&lt;td>46&lt;/td>
+&lt;td>1.26x&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>512&lt;/td>
+&lt;td>782&lt;/td>
+&lt;td>298&lt;/td>
+&lt;td>2.62x&lt;/td>
+&lt;td>88&lt;/td>
+&lt;td>67&lt;/td>
+&lt;td>1.31x&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;h3 id="gist-960-euclidean-1">&lt;code>gist-960-euclidean&lt;/code>&lt;/h3>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>&lt;code>ef_construction&lt;/code>&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> size (MB)&lt;/th>
+&lt;th>&lt;code>bit&lt;/code> size (MB)&lt;/th>
+&lt;th>Space reduction&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> build-time (s)&lt;/th>
+&lt;th>&lt;code>bit&lt;/code> build-time (s)&lt;/th>
+&lt;th>Speedup&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>32&lt;/td>
+&lt;td>7,811&lt;/td>
+&lt;td>405&lt;/td>
+&lt;td>19.29x&lt;/td>
+&lt;td>145&lt;/td>
+&lt;td>77&lt;/td>
+&lt;td>1.88x&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>64&lt;/td>
+&lt;td>7,684&lt;/td>
+&lt;td>405&lt;/td>
+&lt;td>18.97x&lt;/td>
+&lt;td>161&lt;/td>
+&lt;td>76&lt;/td>
+&lt;td>2.12x&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>128&lt;/td>
+&lt;td>7,680&lt;/td>
+&lt;td>405&lt;/td>
+&lt;td>18.96x&lt;/td>
+&lt;td>190&lt;/td>
+&lt;td>76&lt;/td>
+&lt;td>2.50x&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>256&lt;/td>
+&lt;td>7,678&lt;/td>
+&lt;td>405&lt;/td>
+&lt;td>18.96x&lt;/td>
+&lt;td>247&lt;/td>
+&lt;td>77&lt;/td>
+&lt;td>3.20x&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>512&lt;/td>
+&lt;td>7,678&lt;/td>
+&lt;td>405&lt;/td>
+&lt;td>18.96x&lt;/td>
+&lt;td>349&lt;/td>
+&lt;td>76&lt;/td>
+&lt;td>4.59x&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;h3 id="dbpedia-openai-1000k-angular-1">&lt;code>dbpedia-openai-1000k-angular&lt;/code>&lt;/h3>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>&lt;code>ef_construction&lt;/code>&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> size (MB)&lt;/th>
+&lt;th>&lt;code>bit&lt;/code> size (MB)&lt;/th>
+&lt;th>Space reduction&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> build-time (s)&lt;/th>
+&lt;th>&lt;code>bit&lt;/code> build-time (s)&lt;/th>
+&lt;th>Speedup&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>32&lt;/td>
+&lt;td>7,734&lt;/td>
+&lt;td>473&lt;/td>
+&lt;td>16.35x&lt;/td>
+&lt;td>244&lt;/td>
+&lt;td>151&lt;/td>
+&lt;td>1.62x&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>64&lt;/td>
+&lt;td>7,734&lt;/td>
+&lt;td>473&lt;/td>
+&lt;td>16.35x&lt;/td>
+&lt;td>264&lt;/td>
+&lt;td>155&lt;/td>
+&lt;td>1.70x&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>128&lt;/td>
+&lt;td>7,734&lt;/td>
+&lt;td>473&lt;/td>
+&lt;td>16.35x&lt;/td>
+&lt;td>301&lt;/td>
+&lt;td>162&lt;/td>
+&lt;td>1.86x&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>256&lt;/td>
+&lt;td>7,734&lt;/td>
+&lt;td>473&lt;/td>
+&lt;td>16.35x&lt;/td>
+&lt;td>377&lt;/td>
+&lt;td>187&lt;/td>
+&lt;td>2.02x&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>512&lt;/td>
+&lt;td>7,734&lt;/td>
+&lt;td>473&lt;/td>
+&lt;td>16.35x&lt;/td>
+&lt;td>508&lt;/td>
+&lt;td>227&lt;/td>
+&lt;td>2.24x&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;p>From these tests, we see that the space savings becomes significantly more pronounced as the dimensions of the vectors becomes larger, but we do see the reduction trailing off for the 1536-dim vector. This comes back earlier to the fact that a PostgreSQL page is 8KB: we can fit about 68 &lt;code>bit(960)&lt;/code> on an index page, whereas we can only fit about 42 &lt;code>bit(1536)&lt;/code> on the same page. However, notice that we don&amp;rsquo;t have much space savings for the 128-dim vector: this makes sense, as we&amp;rsquo;re only transforming 128 bytes (1024 bits) into 128 bits, and while it&amp;rsquo;s an 8x reduction in information, we&amp;rsquo;re already efficiently clustering the flat 128-dim vectors in the index pages. The other interesting element is that the speedups, while at least faster for the larger vectors, don&amp;rsquo;t correlate with the space reduction. There is likely still some optimization work we can do in pgvector to speed up the Hamming distance function.&lt;/p>
+&lt;p>Now let&amp;rsquo;s at the impact on query performance and recall. First, let&amp;rsquo;s evaluate performance and recall without any reranking:&lt;/p>
+&lt;h3 id="sift-128-euclidean--ef_construction256-no-rerank">&lt;code>sift-128-euclidean&lt;/code> @ &lt;code>ef_construction=256&lt;/code> (no rerank)&lt;/h3>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>&lt;code>hnsw.ef_search&lt;/code>&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> recall&lt;/th>
+&lt;th>&lt;code>bit&lt;/code> recall&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> QPS&lt;/th>
+&lt;th>&lt;code>bit&lt;/code> QPS&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> p99 latency (ms)&lt;/th>
+&lt;th>&lt;code>bit&lt;/code> p99 latency (ms)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>10&lt;/td>
+&lt;td>77.7%&lt;/td>
+&lt;td>2.18%&lt;/td>
+&lt;td>2,100&lt;/td>
+&lt;td>2,412&lt;/td>
+&lt;td>0.71&lt;/td>
+&lt;td>0.61&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>40&lt;/td>
+&lt;td>95.4%&lt;/td>
+&lt;td>2.42%&lt;/td>
+&lt;td>1,020&lt;/td>
+&lt;td>1,095&lt;/td>
+&lt;td>1.19&lt;/td>
+&lt;td>1.25&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>200&lt;/td>
+&lt;td>99.8%&lt;/td>
+&lt;td>2.52%&lt;/td>
+&lt;td>268&lt;/td>
+&lt;td>280&lt;/td>
+&lt;td>4.60&lt;/td>
+&lt;td>4.91&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>800&lt;/td>
+&lt;td>100.0%&lt;/td>
+&lt;td>2.52%&lt;/td>
+&lt;td>84&lt;/td>
+&lt;td>86&lt;/td>
+&lt;td>15.07&lt;/td>
+&lt;td>16.05&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;h3 id="gist-960-euclidean--ef_construction256-no-rerank">&lt;code>gist-960-euclidean&lt;/code> @ &lt;code>ef_construction=256&lt;/code> (no rerank)&lt;/h3>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>&lt;code>hnsw.ef_search&lt;/code>&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> recall&lt;/th>
+&lt;th>&lt;code>bit&lt;/code> recall&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> QPS&lt;/th>
+&lt;th>&lt;code>bit&lt;/code> QPS&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> p99 latency (ms)&lt;/th>
+&lt;th>&lt;code>bit&lt;/code> p99 latency (ms)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>10&lt;/td>
+&lt;td>50.4%&lt;/td>
+&lt;td>0.00%&lt;/td>
+&lt;td>1,114&lt;/td>
+&lt;td>6,050&lt;/td>
+&lt;td>1.36&lt;/td>
+&lt;td>0.18&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>40&lt;/td>
+&lt;td>78.0%&lt;/td>
+&lt;td>0.00%&lt;/td>
+&lt;td>513&lt;/td>
+&lt;td>4,847&lt;/td>
+&lt;td>2.64&lt;/td>
+&lt;td>0.24&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>200&lt;/td>
+&lt;td>96.0%&lt;/td>
+&lt;td>0.00%&lt;/td>
+&lt;td>135&lt;/td>
+&lt;td>4,057&lt;/td>
+&lt;td>8.70&lt;/td>
+&lt;td>0.27&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>800&lt;/td>
+&lt;td>99.6%&lt;/td>
+&lt;td>0.00%&lt;/td>
+&lt;td>41&lt;/td>
+&lt;td>3,871&lt;/td>
+&lt;td>29.20&lt;/td>
+&lt;td>0.28&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;h3 id="dbpedia-openai-1000k-angular--ef_construction256-no-rerank">&lt;code>dbpedia-openai-1000k-angular&lt;/code> @ &lt;code>ef_construction=256&lt;/code> (no rerank)&lt;/h3>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>&lt;code>hnsw.ef_search&lt;/code>&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> recall&lt;/th>
+&lt;th>&lt;code>bit&lt;/code> recall&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> QPS&lt;/th>
+&lt;th>&lt;code>bit&lt;/code> QPS&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> p99 latency (ms)&lt;/th>
+&lt;th>&lt;code>bit&lt;/code> p99 latency (ms)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>10&lt;/td>
+&lt;td>85.1%&lt;/td>
+&lt;td>60.1%&lt;/td>
+&lt;td>1,162&lt;/td>
+&lt;td>1,556&lt;/td>
+&lt;td>1.40&lt;/td>
+&lt;td>1.02&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>40&lt;/td>
+&lt;td>96.8%&lt;/td>
+&lt;td>66.8%&lt;/td>
+&lt;td>567&lt;/td>
+&lt;td>848&lt;/td>
+&lt;td>2.70&lt;/td>
+&lt;td>1.79&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>200&lt;/td>
+&lt;td>99.6%&lt;/td>
+&lt;td>68.3%&lt;/td>
+&lt;td>156&lt;/td>
+&lt;td>251&lt;/td>
+&lt;td>9.01&lt;/td>
+&lt;td>5.61&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>800&lt;/td>
+&lt;td>99.9%&lt;/td>
+&lt;td>68.6%&lt;/td>
+&lt;td>48&lt;/td>
+&lt;td>71&lt;/td>
+&lt;td>30.50&lt;/td>
+&lt;td>19.57&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;p>The above shows why with approximate nearest neighbor search, you &lt;strong>must&lt;/strong> measure performance and recall. Without doing so, you&amp;rsquo;d walk away thinking that using binary quantization for the &lt;code>gist-960-euclidean&lt;/code> set is a clear, high performant winner, but you&amp;rsquo;d be returning garbage results. Similarly, &lt;code>sift-128-euclidean&lt;/code> has terrible recall with binary quantization, but does not show much difference in query performance between the flat value.&lt;/p>
+&lt;p>However, &lt;code>dbpedia-openai-1000k-angular&lt;/code> looks promising: while the recall numbers are not great, they&amp;rsquo;re significantly higher than the others, likely due to the bit-diversity between the values. We may be able to improve our results if we re-rank. Remember that our rerank query looks something like this (using a 3072-dim vector):&lt;/p>
+&lt;div class="highlight">&lt;pre tabindex="0" class="chroma">&lt;code class="language-sql" data-lang="sql">&lt;span class="line">&lt;span class="cl">&lt;span class="k">SELECT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">i&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="n">id&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">FROM&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">SELECT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">id&lt;/span>&lt;span class="p">,&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">embedding&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="o">&amp;lt;=&amp;gt;&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="err">$&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">AS&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">distance&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">FROM&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">items&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">ORDER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">BY&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">quantize_binary&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="n">embedding&lt;/span>&lt;span class="p">)::&lt;/span>&lt;span class="nb">bit&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="mi">3072&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="o">&amp;lt;~&amp;gt;&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">quantize_binary&lt;/span>&lt;span class="p">(&lt;/span>&lt;span class="err">$&lt;/span>&lt;span class="mi">1&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w"> &lt;/span>&lt;span class="k">LIMIT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">800&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="c1">-- bound by hnsw.ef_search
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="c1">&lt;/span>&lt;span class="p">)&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">i&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">ORDER&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="k">BY&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="n">i&lt;/span>&lt;span class="p">.&lt;/span>&lt;span class="n">distance&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;span class="line">&lt;span class="cl">&lt;span class="w">&lt;/span>&lt;span class="k">LIMIT&lt;/span>&lt;span class="w"> &lt;/span>&lt;span class="mi">10&lt;/span>&lt;span class="p">;&lt;/span>&lt;span class="w">
+&lt;/span>&lt;/span>&lt;/span>&lt;/code>&lt;/pre>&lt;/div>&lt;p>Let&amp;rsquo;s look at the same results with reranking:&lt;/p>
+&lt;h3 id="sift-128-euclidean--ef_construction256-with-rerank">&lt;code>sift-128-euclidean&lt;/code> @ &lt;code>ef_construction=256&lt;/code> (with rerank)&lt;/h3>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>&lt;code>hnsw.ef_search&lt;/code>&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> recall&lt;/th>
+&lt;th>&lt;code>bit&lt;/code> recall&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> QPS&lt;/th>
+&lt;th>&lt;code>bit&lt;/code> QPS&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> p99 latency (ms)&lt;/th>
+&lt;th>&lt;code>bit&lt;/code> p99 latency (ms)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>10&lt;/td>
+&lt;td>77.7%&lt;/td>
+&lt;td>2.31%&lt;/td>
+&lt;td>2,100&lt;/td>
+&lt;td>2,194&lt;/td>
+&lt;td>0.71&lt;/td>
+&lt;td>0.65&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>40&lt;/td>
+&lt;td>95.4%&lt;/td>
+&lt;td>4.19%&lt;/td>
+&lt;td>1,020&lt;/td>
+&lt;td>971&lt;/td>
+&lt;td>1.19&lt;/td>
+&lt;td>1.34&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>200&lt;/td>
+&lt;td>99.8%&lt;/td>
+&lt;td>8.88%&lt;/td>
+&lt;td>268&lt;/td>
+&lt;td>246&lt;/td>
+&lt;td>4.60&lt;/td>
+&lt;td>5.32&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>800&lt;/td>
+&lt;td>100.0%&lt;/td>
+&lt;td>15.69%&lt;/td>
+&lt;td>84&lt;/td>
+&lt;td>76&lt;/td>
+&lt;td>15.07&lt;/td>
+&lt;td>17.28&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;h3 id="gist-960-euclidean--ef_construction256-with-rerank">&lt;code>gist-960-euclidean&lt;/code> @ &lt;code>ef_construction=256&lt;/code> (with rerank)&lt;/h3>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>&lt;code>hnsw.ef_search&lt;/code>&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> recall&lt;/th>
+&lt;th>&lt;code>bit&lt;/code> recall&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> QPS&lt;/th>
+&lt;th>&lt;code>bit&lt;/code> QPS&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> p99 latency (ms)&lt;/th>
+&lt;th>&lt;code>bit&lt;/code> p99 latency (ms)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>10&lt;/td>
+&lt;td>50.4%&lt;/td>
+&lt;td>0.00%&lt;/td>
+&lt;td>1,114&lt;/td>
+&lt;td>2,744&lt;/td>
+&lt;td>1.36&lt;/td>
+&lt;td>0.40&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>40&lt;/td>
+&lt;td>78.0%&lt;/td>
+&lt;td>0.00%&lt;/td>
+&lt;td>513&lt;/td>
+&lt;td>1,030&lt;/td>
+&lt;td>2.64&lt;/td>
+&lt;td>1.00&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>200&lt;/td>
+&lt;td>96.0%&lt;/td>
+&lt;td>0.00%&lt;/td>
+&lt;td>135&lt;/td>
+&lt;td>569&lt;/td>
+&lt;td>8.70&lt;/td>
+&lt;td>1.79&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>800&lt;/td>
+&lt;td>99.6%&lt;/td>
+&lt;td>0.00%&lt;/td>
+&lt;td>41&lt;/td>
+&lt;td>562&lt;/td>
+&lt;td>29.20&lt;/td>
+&lt;td>1.82&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;h3 id="dbpedia-openai-1000k-angular--ef_construction256-with-rerank">&lt;code>dbpedia-openai-1000k-angular&lt;/code> @ &lt;code>ef_construction=256&lt;/code> (with rerank)&lt;/h3>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>&lt;code>hnsw.ef_search&lt;/code>&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> recall&lt;/th>
+&lt;th>&lt;code>bit&lt;/code> recall&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> QPS&lt;/th>
+&lt;th>&lt;code>bit&lt;/code> QPS&lt;/th>
+&lt;th>&lt;code>vector&lt;/code> p99 latency (ms)&lt;/th>
+&lt;th>&lt;code>bit&lt;/code> p99 latency (ms)&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>10&lt;/td>
+&lt;td>85.1%&lt;/td>
+&lt;td>60.1%&lt;/td>
+&lt;td>1,162&lt;/td>
+&lt;td>1,503&lt;/td>
+&lt;td>1.40&lt;/td>
+&lt;td>1.03&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>40&lt;/td>
+&lt;td>96.8%&lt;/td>
+&lt;td>91.6%&lt;/td>
+&lt;td>567&lt;/td>
+&lt;td>760&lt;/td>
+&lt;td>2.70&lt;/td>
+&lt;td>1.91&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>200&lt;/td>
+&lt;td>99.6%&lt;/td>
+&lt;td>99.0%&lt;/td>
+&lt;td>156&lt;/td>
+&lt;td>222&lt;/td>
+&lt;td>9.01&lt;/td>
+&lt;td>6.01&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>800&lt;/td>
+&lt;td>99.9%&lt;/td>
+&lt;td>99.8%&lt;/td>
+&lt;td>48&lt;/td>
+&lt;td>62&lt;/td>
+&lt;td>30.50&lt;/td>
+&lt;td>21.34&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;p>So, what do we learn with binary quantization and reranking? With &lt;code>sift-128-euclidean&lt;/code> and re-ranking, we&amp;rsquo;re able to improve on recall as we increase &lt;code>hnsw.ef_search&lt;/code>, but the recall is still very poor. The &lt;code>gist-960-euclidean&lt;/code> test is still returning garbage, but not as quickly as before.&lt;/p>
+&lt;p>But the &lt;code>dbpedia-openai-1000k-angular&lt;/code> results are very interesting. Once we expand our search radius vis-a-vis &lt;code>hnsw.ef_search=40&lt;/code>, we see that we get a 1.34x boost in QPS and a 29% reduction in p99 latency with only sacrificing 5% in recall. This is using an index that&amp;rsquo;s 16x smaller and builds twice as fast! Moving up to &lt;code>hnsw.ef_search=200&lt;/code>, we get 1.42x faster QPS with a 33% decrease in p99 latency with comparable recall!&lt;/p>
+&lt;p>There are a few takeaways from this. First, given how binary quantization works, the experiments show that to ensure your results have meaning, you most certainly will need to perform a reranking. Additionally, bit-diversity matters: the most distinct values we have in the index, the more likely we&amp;rsquo;ll be able to get distinguishable results that lead to higher recall. This leads to a decision though: how much recall matters? If you&amp;rsquo;re doing k=10 / top-10 queries, 90% should be good enough, which means in the above example, you can use &lt;code>hnsw.ef_search=40&lt;/code> on the &lt;code>dbpedia-openai-1000k-angular&lt;/code> dataset to achieve low latency queries that meet your recall target.&lt;/p>
+&lt;p>One indirect observation I have from these tests is around how the overall size of a dataset impacts recall for binary quantization. We see good results on the &lt;code>dbpedia-openai-1000k-angular&lt;/code> dataset because the overall dataset size is small (1,000,000) and has good diversity amongst the bit vectors. However, looking at the results of the other two data sets, I would be willing to bet that recall degrades as the 1536-dim data set gets larger (e.g. 1,000,000,000) and requires a larger &lt;code>hnsw.ef_search&lt;/code> + reranking to achieve the same results.&lt;/p>
+&lt;p>Finally, for all of these experiments, note that the workload was able to fit entirely into memory (the benefit of using a r7gd.16xlarge) to ensure we&amp;rsquo;re getting a fair comparison between methods. However, in the &amp;ldquo;real-world,&amp;rdquo; binary quantization lets you keep your index entirely in memory on much smaller systems - for example, with &lt;code>dbpedia-openai-1000k-angular&lt;/code> the binary quantized index takes up 473MB vs. 7,734MB (7.5GB) for the full index. If you&amp;rsquo;re getting the recall results you want from an index using binary quantization, this is an effective technique to reduce your overall storage and memory footprint in your system.&lt;/p>
+&lt;h2 id="future-experiments">Future experiments&lt;/h2>
+&lt;p>While the results are really interesting, there is still more to test (and develop!) around quantization. A few more experiments I&amp;rsquo;d like to run in the future:&lt;/p>
+&lt;ul>
+&lt;li>With &lt;code>dbpedia-openai-1000k-angular&lt;/code>, quantize the &lt;code>vector&lt;/code> to &lt;code>halfvec&lt;/code> in the table, and then use binary quantization on the &lt;code>halfvec&lt;/code>. I suspect that we reduce the storage/memory footprint even further, get slightly higher QPS/better p99 latency, and don&amp;rsquo;t impact recall.&lt;/li>
+&lt;li>Similarly, test storing everything as &lt;code>halfvec&lt;/code> in the table and then building the &lt;code>halfvec&lt;/code> index. I also suspect comparable recall, but possibly better query performance numbers. This does lose precision in the vector stored in the table, so I think the results will be model dependent.&lt;/li>
+&lt;li>Test the explicit impact of CPU, i.e. SIMD, acceleration. The unreleased PostgreSQL 17 has planned support for AVX-512 some functions used for computing binary distances; we may be able to further speed up those distance functions.&lt;/li>
+&lt;li>Test the hypothesis around recall with binary quantization degrading on much larger datasets as there&amp;rsquo;s less bit diversity amongst the values.&lt;/li>
+&lt;/ul>
+&lt;h2 id="conclusion-what-if-any-quantization-technique-should-i-use">Conclusion: What (if any) quantization technique should I use?&lt;/h2>
+&lt;p>When I give a &lt;a href="https://jkatz.github.io/talks/">talk&lt;/a> on pgvector or vector search in general, my concluding slide always ends with &amp;ldquo;plan for today and tomorrow.&amp;rdquo; I think these quantization techniques are a great example of that.&lt;/p>
+&lt;p>First and foremost, pgvector maintains its changes as additive, meaning that as you upgrade, you will not need to make costly on-disk changes. Adopting a new feature may mean reindexing, though fortunately PostgreSQL and pgvector support the nonblocking &lt;code>REINDEX CONCURRENTLY&lt;/code> operation.&lt;/p>
+&lt;p>That said, I think there are a few clear takeaways and tradeoffs to consider when determining what quantization technique to use:&lt;/p>
+&lt;ul>
+&lt;li>&lt;strong>Scalar quantization from 4-byte to 2-byte floats looks like a clear winner&lt;/strong>, at least amongst these datasets. I feel comfortable recommending storing the &lt;code>vector&lt;/code> in the table and quantizing to &lt;code>halfvec&lt;/code> in the index. I&amp;rsquo;d like to see the results over larger datasets, but I still think this is a really good starting point.&lt;/li>
+&lt;li>&lt;strong>Binary quantization works better for datasets that produce larger vectors that can be distinguished by their bits&lt;/strong>. The more distinguished bits, the better recall we&amp;rsquo;ll achieve.
+&lt;ul>
+&lt;li>I also suspect that as these datasets get very large, we start to see degraded recall results.&lt;/li>
+&lt;/ul>
+&lt;/li>
+&lt;li>&lt;strong>Effective quantization allows you to reduce your storage/memory footprint, which on one hand means you can use smaller instances, but it also means you can scale your workload even further&lt;/strong>. This is great news for pgvector, particularly as we see more &lt;a href="https://jkatz.github.io/post/postgres/distributed-pgvector/">&amp;ldquo;billion-scale&amp;rdquo; and beyond datasets&lt;/a>.&lt;/li>
+&lt;/ul>
+&lt;p>While ANN Benchmarks and other ANN testing tools for databases do provide a good set of datasets to evaluate quantization techniques, this may not reflect the results you see with your actual workload. You still need to test to see if scalar or binary quantization make sense. However, one of my goals is to give you a guide on how to make that evaluation, and hopefully save some time in the process.&lt;/p></description></item><item><title>Will PostgreSQL ever change its license?</title><link>https://jkatz.github.io/post/postgres/postgres-license-2024/</link><pubDate>Wed, 20 Mar 2024 00:00:00 +0000</pubDate><guid>https://jkatz.github.io/post/postgres/postgres-license-2024/</guid><description>&lt;p>(Disclosure: I&amp;rsquo;m on the &lt;a href="https://www.postgresql.org/developer/core/">PostgreSQL Core Team&lt;/a>, but what&amp;rsquo;s written in this post are my personal views and not official project statements&amp;hellip;unless I link to something that&amp;rsquo;s an official project statement ;)&lt;/p>
 &lt;p>I was very sad to learn today that the &lt;a href="https://redis.com/blog/redis-adopts-dual-source-available-licensing/">Redis project will no longer be released under an open source license&lt;/a>. Sad for two reasons: as a longtime Redis user and pretty early adopter, and as an open source contributor. I&amp;rsquo;ll preface that I&amp;rsquo;m empathetic to the challenges of building businesses around open source, having been on multiple sides of this equation. I&amp;rsquo;m also cognizant of the downstream effects of these changes that can completely flip how a user adopts and uses a piece of technology.&lt;/p>
 &lt;p>Whenever there&amp;rsquo;s a shakeup in open source licensing, particularly amongst databases and related systems (MySQL =&amp;gt; Sun =&amp;gt; Oracle being the one that first springs to mind), I&amp;rsquo;ll hear the question &amp;ldquo;Will PostgreSQL ever change its license?&amp;rdquo;&lt;/p>
 &lt;p>The PostgreSQL website &lt;a href="https://www.postgresql.org/about/licence/">has an answer&lt;/a>:&lt;/p>
