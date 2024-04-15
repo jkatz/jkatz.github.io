@@ -206,17 +206,17 @@ CREATE TABLE documents (
 );
 
 CREATE INDEX ON documents
-    USING hnsw ((quantize_binary(embedding)::bit(3072)) bit_hamming_ops);
+    USING hnsw ((binary_quantize(embedding)::bit(3072)) bit_hamming_ops);
 ```
 
-Again, notice we use a PostgreSQL expression index to quantize the embedding, and explicitly cast the bit dimensionality. That final cast is important: `quantize_binary` just returns a bit string, and pgvector index building needs to detect and explicit dimension.
+Again, notice we use a PostgreSQL expression index to quantize the embedding, and explicitly cast the bit dimensionality. That final cast is important: `binary_quantize` just returns a bit string, and pgvector index building needs to detect and explicit dimension.
 
 The following query is how to search the index using binary quantization:
 
 ```sql
 SELECT id
 FROM documents
-ORDER BY quantize_binary(embedding)::bit(3072) <~> quantize_binary($1)
+ORDER BY binary_quantize(embedding)::bit(3072) <~> binary_quantize($1)
 LIMIT 10;
 ```
 
@@ -229,7 +229,7 @@ SELECT i.id
 FROM (
     SELECT id, embedding <=> $1 AS distance
     FROM items
-    ORDER BY quantize_binary(embedding)::bit(3072) <~> quantize_binary($1)
+    ORDER BY binary_quantize(embedding)::bit(3072) <~> binary_quantize($1)
     LIMIT 800 -- bound by hnsw.ef_search
 ) i
 ORDER BY i.distance
@@ -311,7 +311,7 @@ SELECT i.id
 FROM (
     SELECT id, embedding <=> $1 AS distance
     FROM items
-    ORDER BY quantize_binary(embedding)::bit(3072) <~> quantize_binary($1)
+    ORDER BY binary_quantize(embedding)::bit(3072) <~> binary_quantize($1)
     LIMIT 800 -- bound by hnsw.ef_search
 ) i
 ORDER BY i.distance
