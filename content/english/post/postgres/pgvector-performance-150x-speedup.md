@@ -12,7 +12,7 @@ tags = [
 
 I wanted to write a "[year-in-review](/post/postgres/vectors-json-postgresql/)" covering all the performance  [pgvector](https://github.com/pgvector/pgvector/) has made (with significant credit to [Andrew Kane](https://github.com/ankane)), highlighting specific areas where pgvector has improved (including one 150x improvement!) and areas where we can continue to do better.
 
-A few weeks ago, I started outlining this post and began my data collection the data. While I was working on this over a two week period, no fewer than three competitive benchmarks against pgvector published. To me, this is a testament both how well pgvector is at handling vector workloads (and by extension, PostgreSQL too) that people are using it as the baseline to compare it to their vector search systems.
+A few weeks ago, I started outlining this post and began my data collection. While I was working on this over a two week period, no fewer than three competitive benchmarks against pgvector published. To me, this is a testament both how well pgvector is at handling vector workloads (and by extension, PostgreSQL too) that people are using it as the baseline to compare it to their vector search systems.
 
 Some of these benchmarks did contain info that identified areas we can continue to improve both PostgreSQL and pgvector, but I was generally disappointed in the methodology used to make these comparisons. Of course I'd like to see pgvector perform well in benchmarks, but it's important to position technologies fairly and be vocally self-critical on where your system can improve to build trust in what you're building.
 
