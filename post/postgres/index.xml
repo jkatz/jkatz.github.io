@@ -1,5 +1,1433 @@
-<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Posts on Postgres on Jonathan Katz</title><link>https://jkatz.github.io/post/postgres/</link><description>Recent content in Posts on Postgres on Jonathan Katz</description><generator>Hugo -- gohugo.io</generator><language>en</language><lastBuildDate>Tue, 09 Apr 2024 00:00:00 +0000</lastBuildDate><atom:link href="https://jkatz.github.io/post/postgres/index.xml" rel="self" type="application/rss+xml"/><item><title>Scalar and binary quantization for pgvector vector search and storage</title><link>https://jkatz.github.io/post/postgres/pgvector-scalar-binary-quantization/</link><pubDate>Tue, 09 Apr 2024 00:00:00 +0000</pubDate><guid>https://jkatz.github.io/post/postgres/pgvector-scalar-binary-quantization/</guid><description>&lt;p>While many AI/ML embedding models generate vectors that provide large amounts of information by using high dimensionality, this can come at the cost of using more memory for searches and more overall storage. Both of these can have an impact on the cost and performance of a system that&amp;rsquo;s storing vectors, including when using &lt;a href="https://www.postgresql.org/">PostgreSQL&lt;/a> with the &lt;a href="https://github.com/pgvector/pgvector/">pgvector&lt;/a> for these use cases.&lt;/p>
-&lt;p>When I &lt;a href="https://jkatz05.com/talks/">talk&lt;/a> about &lt;a href="https://www.youtube.com/watch?v=PhIC4JlYg7A&amp;ab_channel=AWSEvents">vector search in PostgreSQL&lt;/a>, I have a slide that I like to call &amp;ldquo;no shortcuts without tradeoffs&amp;rdquo; that calls out the different challenges around searching vectors in a database. I first like to highlight that a 1,536 dimensional vector with 4-byte floating point (&lt;code>fp32&lt;/code>) dimensions requires 6KiB of storage. That may not seem like a lot, but storing 1,000,000 of these vectors in a PostgreSQL database requires 5.7GB of storage without any indexing. And again, that may not seem like a lot, but a single database row is closer to 600B of data (and typically even less than that) than 6KB.&lt;/p>
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>Posts on Postgres on Jonathan Katz</title><link>https://jkatz.github.io/post/postgres/</link><description>Recent content in Posts on Postgres on Jonathan Katz</description><generator>Hugo -- gohugo.io</generator><language>en</language><lastBuildDate>Tue, 30 Apr 2024 00:00:00 +0000</lastBuildDate><atom:link href="https://jkatz.github.io/post/postgres/index.xml" rel="self" type="application/rss+xml"/><item><title>The 150x pgvector speedup: a year-in-review</title><link>https://jkatz.github.io/post/postgres/pgvector-performance-150x-speedup/</link><pubDate>Tue, 30 Apr 2024 00:00:00 +0000</pubDate><guid>https://jkatz.github.io/post/postgres/pgvector-performance-150x-speedup/</guid><description>&lt;p>I wanted to write a &amp;ldquo;&lt;a href="https://jkatz.github.io/post/postgres/vectors-json-postgresql/">year-in-review&lt;/a>&amp;rdquo; covering all the performance &lt;a href="https://github.com/pgvector/pgvector/">pgvector&lt;/a> has made (with significant credit to &lt;a href="https://github.com/ankane">Andrew Kane&lt;/a>), highlighting specific areas where pgvector has improved (including one 150x improvement!) and areas where we can continue to do better.&lt;/p>
+&lt;p>A few weeks ago, I started outlining this post and began my data collection the data. While I was working on this over a two week period, no fewer than three competitive benchmarks against pgvector published. To me, this is a testament both how well pgvector is at handling vector workloads (and by extension, PostgreSQL too) that people are using it as the baseline to compare it to their vector search systems.&lt;/p>
+&lt;p>Some of these benchmarks did contain info that identified areas we can continue to improve both PostgreSQL and pgvector, but I was generally disappointed in the methodology used to make these comparisons. Of course I&amp;rsquo;d like to see pgvector perform well in benchmarks, but it&amp;rsquo;s important to position technologies fairly and be vocally self-critical on where your system can improve to build trust in what you&amp;rsquo;re building.&lt;/p>
+&lt;p>I have a separate blog post planned for how to best present benchmark studies between different systems for vector similarity search (&lt;a href="https://jkatz.github.io/post/postgres/pgvector-hnsw-performance/">it&amp;rsquo;s a topic I&amp;rsquo;m interested in&lt;/a>). Today though, I want to compare pgvector against itself, and highlight areas it&amp;rsquo;s improved over the past year, and where the project can continue to go and grow.&lt;/p>
+&lt;h2 id="how-i-ran-these-tests">How I ran these tests&lt;/h2>
+&lt;p>An important aspect of any benchmark is transparency. First, I&amp;rsquo;ll discuss the test methodology I used, describe the test environment setup (instances, storage, database configuration), and then discuss the results. If you&amp;rsquo;re not interested in this part, you can skip ahead to &amp;ldquo;The 150x pgvector speedup&amp;rdquo;, but this information can help you with your own testing!&lt;/p>
+&lt;p>First, what are testing for? We&amp;rsquo;ll be looking at these specific attributes in these tests:&lt;/p>
+&lt;ul>
+&lt;li>&lt;a href="https://en.wikipedia.org/wiki/Precision_and_recall">&lt;strong>Recall&lt;/strong>&lt;/a>: A measurement of the relevancy of our results - what percentage of the expected results are returned during a vector search? Arguably, this is the most important measurement - it doesn&amp;rsquo;t matter if you have the highest query throughput if your recall is poor.&lt;/li>
+&lt;li>&lt;strong>Storage size&lt;/strong>: This could be related to storing your original vector/associated data, and any data you store in a vector index. Because PostgreSQL is a database, at a minimum you&amp;rsquo;ll have to store the vector in the table, and pay additional storage costs for building a vector index.&lt;/li>
+&lt;li>&lt;strong>Load time / index build time&lt;/strong>: How long does it take to load your vector data into an existing index? If your data is preloaded, how long does it take to build an index? Spending more time building your index can help improve both recall and query performance, but this is often the most expensive part of a vector database and can impact overall system performance.&lt;/li>
+&lt;li>&lt;strong>Latency (p99)&lt;/strong>: Specifically, how long it takes to return a single result, but representing the 99th percentile (&amp;ldquo;very slow&amp;rdquo;) queries. This serves as an &amp;ldquo;upper bound&amp;rdquo; on latency times.&lt;/li>
+&lt;li>&lt;strong>Single-connection Throughput / queries per second (QPS)&lt;/strong>: How many queries can be executed each second? This impacts how much load you can put on a single system.&lt;/li>
+&lt;/ul>
+&lt;p>(More on the &amp;ldquo;single-connection&amp;rdquo; distinction in a future blog post).&lt;/p>
+&lt;p>This is a &amp;ldquo;year-in-review&amp;rdquo; post, so I ran tests against the following releases and configurations of pgvector. I&amp;rsquo;m including the shorthand that I&amp;rsquo;ll show in the tests results.&lt;/p>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>pgvector version&lt;/th>
+&lt;th>Index type&lt;/th>
+&lt;th>Test name (r7gd)&lt;/th>
+&lt;th>Test name (r7i)&lt;/th>
+&lt;th>Notes&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>0.4.1&lt;/td>
+&lt;td>IVFFlat&lt;/td>
+&lt;td>&lt;code>r7gd.041&lt;/code>&lt;/td>
+&lt;td>&lt;code>r7i.041&lt;/code>&lt;/td>
+&lt;td>&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>0.4.4&lt;/td>
+&lt;td>IVFFlat&lt;/td>
+&lt;td>&lt;code>r7gd.044&lt;/code>&lt;/td>
+&lt;td>&lt;code>r7i.044&lt;/code>&lt;/td>
+&lt;td>&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>0.5.0&lt;/td>
+&lt;td>HNSW&lt;/td>
+&lt;td>&lt;code>r7gd.050&lt;/code>&lt;/td>
+&lt;td>&lt;code>r7i.050&lt;/code>&lt;/td>
+&lt;td>&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>0.5.1&lt;/td>
+&lt;td>HNSW&lt;/td>
+&lt;td>&lt;code>r7gd.051&lt;/code>&lt;/td>
+&lt;td>&lt;code>r7i.051&lt;/code>&lt;/td>
+&lt;td>&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>0.6.0&lt;/td>
+&lt;td>HNSW&lt;/td>
+&lt;td>&lt;code>r7gd.060&lt;/code>&lt;/td>
+&lt;td>&lt;code>r7i.060&lt;/code>&lt;/td>
+&lt;td>&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>0.6.2&lt;/td>
+&lt;td>HNSW&lt;/td>
+&lt;td>&lt;code>r7gd.062&lt;/code>&lt;/td>
+&lt;td>&lt;code>r7i.062&lt;/code>&lt;/td>
+&lt;td>&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>0.7.0&lt;/td>
+&lt;td>HNSW&lt;/td>
+&lt;td>&lt;code>r7gd.070&lt;/code>&lt;/td>
+&lt;td>&lt;code>r7i.070&lt;/code>&lt;/td>
+&lt;td>&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>0.7.0&lt;/td>
+&lt;td>HNSW - SQ16&lt;/td>
+&lt;td>&lt;code>r7gd.070.fp16&lt;/code>&lt;/td>
+&lt;td>&lt;code>r7i.070.fp16&lt;/code>&lt;/td>
+&lt;td>Stores 2-byte float representation of vectors in the index&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>0.7.0&lt;/td>
+&lt;td>HNSW - BQ + Jaccard rerank&lt;/td>
+&lt;td>&lt;code>r7gd.070.bq-jaccard-rerank&lt;/code>&lt;/td>
+&lt;td>&lt;code>r7i.070.bq-jaccard-rerank&lt;/code>&lt;/td>
+&lt;td>Stores binary representation of vectors in index using Jaccard distance; results are re-ranked using original vector after the index search&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>0.7.0&lt;/td>
+&lt;td>HNSW - BQ + Hamming rerank&lt;/td>
+&lt;td>&lt;code>r7gd.070.bq-jaccard-rerank&lt;/code>&lt;/td>
+&lt;td>&lt;code>r7i.070.bq-jaccard-rerank&lt;/code>&lt;/td>
+&lt;td>Stores binary representation of vectors in index using Hamming distance; results are re-ranked using original vector after the index search&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;h3 id="test-setup">Test setup&lt;/h3>
+&lt;p>To simplify the comparison, I kept the index build parameters the same for all of the tests. Adjusting build parameters can impact all five of the key metrics (please see &lt;a href="https://jkatz.github.io/tags/pgvector/">previous posts&lt;/a> and &lt;a href="https://jkatz.github.io/talks/">talks&lt;/a>), but the purpose of this blog post is to show how pgvector has evolved over the past year and choosing a fixed set of parameters does serve to show how it&amp;rsquo;s improved and where it can grow. Below are the build parameters used for each index type:&lt;/p>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>Index type&lt;/th>
+&lt;th>Build parameters&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>IVFFlat&lt;/td>
+&lt;td>&lt;code>lists&lt;/code>: &lt;code>1000&lt;/code>&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>HNSW&lt;/td>
+&lt;td>&lt;code>m&lt;/code>: &lt;code>16&lt;/code>; &lt;code>ef_construction&lt;/code>: &lt;code>256&lt;/code>&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;p>For the testing, I used a &lt;code>r7gd.16xlarge&lt;/code> and a &lt;code>r7i.16xlarge&lt;/code>, both of which have 64 vCPU and 512GiB of RAM. I stored the data on the local NVMe on the &lt;code>r7gd&lt;/code>, and on &lt;code>gp3&lt;/code> storage for the &lt;code>r7i&lt;/code>. If this test was looking at behaviors around storage, that fact would matter heavily, but these tests focused specifically on CPU and memory characteristics.&lt;/p>
+&lt;p>For these tests, I used PostgreSQL 16.2 (aside: the upcoming PostgreSQL 17 release is expected to have the ability to utilize AVX-512 SIMD instructions for the &lt;code>pg_popcount&lt;/code> function, used by the Jaccard distance; this doesn&amp;rsquo;t account for those optimizations) with the following configurations, using parallelism where available:&lt;/p>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>&lt;/th>
+&lt;th>&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>checkpoint_timeout&lt;/td>
+&lt;td>2h&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>effective_cache_size&lt;/td>
+&lt;td>256GB&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>jit&lt;/td>
+&lt;td>off&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>maintenance_work_mem&lt;/td>
+&lt;td>64GB&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>max_parallel_maintenance_workers&lt;/td>
+&lt;td>63&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>max_parallel_workers&lt;/td>
+&lt;td>64&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>max_parallel_workers_per_gather&lt;/td>
+&lt;td>64&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>max_wal_size&lt;/td>
+&lt;td>20GB&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>max_worker_processes&lt;/td>
+&lt;td>128&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>shared_buffers&lt;/td>
+&lt;td>128GB&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>wal_compression&lt;/td>
+&lt;td>zstd&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>work_mem&lt;/td>
+&lt;td>64MB&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;p>I used the &lt;a href="https://github.com/erikbern/ann-benchmarks">ANN Benchmark&lt;/a> framework to run the tests. I made the following modifications to the &lt;code>pgvector&lt;/code> module:&lt;/p>
+&lt;ul>
+&lt;li>I commented out the &lt;a href="https://github.com/erikbern/ann-benchmarks/blob/75043ab482d91afae82ac4033cbdd98997121d58/ann_benchmarks/algorithms/pgvector/module.py#L25">&lt;code>subprocess.run&lt;/code>&lt;/a> line so I could run the test in a local process, not a container&lt;/li>
+&lt;li>I added modules to run both the new work &lt;a href="https://jkatz.github.io/post/postgres/pgvector-scalar-binary-quantization/">scalar/binary quantization&lt;/a> code in v0.7.0 (&lt;a href="https://jkatz.github.io/post/postgres/pgvector-scalar-binary-quantization/">see previous blog post for more details&lt;/a>). This followed the same format as the existing test.&lt;/li>
+&lt;li>Additionally, I revived the &lt;a href="https://github.com/erikbern/ann-benchmarks/blob/fd389848e5706fdb0fbfc0e58bcb584e2ce7d4ee/ann_benchmarks/algorithms/pgvector/module.py">IVFFlat code&lt;/a> to run those tests. I did &lt;a href="https://github.com/erikbern/ann-benchmarks/commit/c09127170291301c9da759cfe41294ade0d22652">include a recent commit to accelerate the loading of data into the table&lt;/a>.&lt;/li>
+&lt;li>I did make a small tweak to the timing of the index build. Instead of considering both the data load and the index build time, I only timed the index build. I&amp;rsquo;m planning to propose this as a contribution to the upstream project, as the primary goal of the &lt;code>fit&lt;/code> portion of ANN Benchmarks is to test the index build time.&lt;/li>
+&lt;/ul>
+&lt;p>For each index type I used the following search parameters, which are the defaults for what&amp;rsquo;s in the pgvector module for ANN Benchmarks:&lt;/p>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>Index type&lt;/th>
+&lt;th>Search parameters&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>IVFFlat&lt;/td>
+&lt;td>&lt;code>ivfflat.probes&lt;/code>: &lt;code>[1, 2, 4, 10, 20, 40, 100]&lt;/code>&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>HNSW&lt;/td>
+&lt;td>&lt;code>hnsw.ef_search&lt;/code>: &lt;code>[10, 20, 40, 80, 120, 200, 400, 800]&lt;/code>&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;p>Finally, the test results below will show the recall target (e.g. &lt;code>0.90&lt;/code> or &lt;code>90%&lt;/code>). The results are shown at the threshold that each test passed that recall level (if it passed that recall level). I could probably have fine tuned this further to find the exact &lt;code>hnsw.ef_search&lt;/code> value where the test crossed the threshold, which would give a more accurate representation of the performance characteristics at a recall target, but again, the main goal is to show the growth and growth areas of pgvector over the past year.&lt;/p>
+&lt;p>And now it&amp;rsquo;s time for&amp;hellip;&lt;/p>
+&lt;h2 id="the-150x-pgvector-speedup">The 150x pgvector speedup&lt;/h2>
+&lt;p>For the first test, we&amp;rsquo;ll review the results from the &lt;code>dbpedia-openai-1000k-angular&lt;/code> benchmark at 99% recall. The results are below:&lt;/p>
+&lt;h3 id="dbpedia-openai-1000k-angular--99-recall-on-a-r7gd16xlarge">&lt;code>dbpedia-openai-1000k-angular&lt;/code> @ 99% recall on a r7gd.16xlarge&lt;/h3>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>Test&lt;/th>
+&lt;th>Recall&lt;/th>
+&lt;th>Single Connection Throughput (QPS)&lt;/th>
+&lt;th>QPS Speedup&lt;/th>
+&lt;th>p99 Latency (ms)&lt;/th>
+&lt;th>p99 Speedup&lt;/th>
+&lt;th>Index Build (s)&lt;/th>
+&lt;th>Index Build Speedup&lt;/th>
+&lt;th>Index Size (GiB)&lt;/th>
+&lt;th>Size Improvement&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>r7gd.041&lt;/td>
+&lt;td>0.994&lt;/td>
+&lt;td>8&lt;/td>
+&lt;td>1&lt;/td>
+&lt;td>150.16&lt;/td>
+&lt;td>1&lt;/td>
+&lt;td>474&lt;/td>
+&lt;td>16&lt;/td>
+&lt;td>7.56&lt;/td>
+&lt;td>1&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.044&lt;/td>
+&lt;td>0.994&lt;/td>
+&lt;td>8&lt;/td>
+&lt;td>1&lt;/td>
+&lt;td>155.25&lt;/td>
+&lt;td>1&lt;/td>
+&lt;td>476&lt;/td>
+&lt;td>16&lt;/td>
+&lt;td>7.56&lt;/td>
+&lt;td>1&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.050&lt;/td>
+&lt;td>0.993&lt;/td>
+&lt;td>243&lt;/td>
+&lt;td>30.4&lt;/td>
+&lt;td>5.74&lt;/td>
+&lt;td>27&lt;/td>
+&lt;td>7479&lt;/td>
+&lt;td>1&lt;/td>
+&lt;td>7.55&lt;/td>
+&lt;td>1&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.051&lt;/td>
+&lt;td>0.992&lt;/td>
+&lt;td>247&lt;/td>
+&lt;td>30.9&lt;/td>
+&lt;td>5.67&lt;/td>
+&lt;td>27.4&lt;/td>
+&lt;td>5088&lt;/td>
+&lt;td>2&lt;/td>
+&lt;td>7.55&lt;/td>
+&lt;td>1&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.060&lt;/td>
+&lt;td>0.992&lt;/td>
+&lt;td>252&lt;/td>
+&lt;td>31.5&lt;/td>
+&lt;td>5.52&lt;/td>
+&lt;td>28.1&lt;/td>
+&lt;td>253&lt;/td>
+&lt;td>30&lt;/td>
+&lt;td>7.55&lt;/td>
+&lt;td>1&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.062&lt;/td>
+&lt;td>0.992&lt;/td>
+&lt;td>253&lt;/td>
+&lt;td>31.6&lt;/td>
+&lt;td>5.54&lt;/td>
+&lt;td>28&lt;/td>
+&lt;td>252&lt;/td>
+&lt;td>30&lt;/td>
+&lt;td>7.55&lt;/td>
+&lt;td>1&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.070&lt;/td>
+&lt;td>0.992&lt;/td>
+&lt;td>253&lt;/td>
+&lt;td>31.6&lt;/td>
+&lt;td>5.51&lt;/td>
+&lt;td>28.2&lt;/td>
+&lt;td>250&lt;/td>
+&lt;td>30&lt;/td>
+&lt;td>7.55&lt;/td>
+&lt;td>1&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.070.fp16&lt;/td>
+&lt;td>0.993&lt;/td>
+&lt;td>263&lt;/td>
+&lt;td>32.9&lt;/td>
+&lt;td>5.3&lt;/td>
+&lt;td>29.3&lt;/td>
+&lt;td>146&lt;/td>
+&lt;td>51&lt;/td>
+&lt;td>3.78&lt;/td>
+&lt;td>2&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.070.bq-hamming-rerank&lt;/td>
+&lt;td>0.99&lt;/td>
+&lt;td>236&lt;/td>
+&lt;td>29.5&lt;/td>
+&lt;td>5.4&lt;/td>
+&lt;td>28.8&lt;/td>
+&lt;td>49&lt;/td>
+&lt;td>153&lt;/td>
+&lt;td>0.46&lt;/td>
+&lt;td>16.4&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.070.bq-jaccard-rerank&lt;/td>
+&lt;td>0.99&lt;/td>
+&lt;td>234&lt;/td>
+&lt;td>29.3&lt;/td>
+&lt;td>5.38&lt;/td>
+&lt;td>28.9&lt;/td>
+&lt;td>50&lt;/td>
+&lt;td>150&lt;/td>
+&lt;td>0.46&lt;/td>
+&lt;td>16.4&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;p>And there it is: between pgvector 0.5.0 (where HNSW was introduced) and pgvector 0.7.0, we see that we can get a 150x speedup in the index build time when we use the &amp;ldquo;&lt;a href="https://jkatz.github.io/post/postgres/pgvector-scalar-binary-quantization/">binary quantization&lt;/a>&amp;rdquo; methods. Note that &lt;a href="https://jkatz.github.io/post/postgres/pgvector-scalar-binary-quantization/">we can&amp;rsquo;t always use binary quantization&lt;/a> with our data, but we can see we can that scalar quantization to 2-byte floats show over a 50x speedup from the initial HNSW implementation in pgvector 0.5.0. A lot of this speedup is attributed to the use of parallel workers (in this case, 64) during the index build process. For fun, here&amp;rsquo;s how this looks in a bar chart:&lt;/p>
+&lt;p>&lt;img src="https://jkatz.github.io/images/pgvector-150x-r7gd-dbpedia.png" alt="pgvector-150x-r7gd-dbpedia.png">&lt;/p>
+&lt;p>(Note: I do chuckle a bit, as it reminds of a time I fixed a query I wrote to get a 100x speedup. It was a recursive query, but I used &lt;code>UNION ALL&lt;/code> when instead I wanted &lt;code>UNION&lt;/code>. Unlike my goofy mistake, this I do take this work in pgvector to be a bona fide speedup due to all of the improvements in the pgvector implementation).&lt;/p>
+&lt;p>Additionally, we see that the addition of HNSW allows us to get a 30x QPS boost and an almost 30x p99 latency boost over IVFFlat at 99% recall. Queries were executed serially; we&amp;rsquo;d need to run additional tests to see how pgvector scales with client concurrently querying the data.&lt;/p>
+&lt;h3 id="dbpedia-openai-1000k-angular--99-recall-on-a-r7i16xlarge">&lt;code>dbpedia-openai-1000k-angular&lt;/code> @ 99% recall on a r7i.16xlarge&lt;/h3>
+&lt;p>Different CPU families can impact the results from a test based upon the availability of acceleration instructions (e.g. SIMD). pgvector 0.7.0 added support for SIMD disaptching functions on x86-64 architecture, so it&amp;rsquo;s important to test what impact this has on our test runs. For these tests, I used an Ubuntu 22.04, with the pgvector code compiled with gcc 12.3 and clang-15, and am showing the results from the &lt;code>dbpedia-openai-1000k-angular&lt;/code> benchmark at 99% recall:&lt;/p>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>Test&lt;/th>
+&lt;th>Recall&lt;/th>
+&lt;th>Single Connection Throughput (QPS)&lt;/th>
+&lt;th>QPS Speedup&lt;/th>
+&lt;th>p99 Latency (ms)&lt;/th>
+&lt;th>p99 Speedup&lt;/th>
+&lt;th>Index Build (s)&lt;/th>
+&lt;th>Index Build Speedup&lt;/th>
+&lt;th>Index Size (GiB)&lt;/th>
+&lt;th>Size Improvement&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>r7i.041&lt;/td>
+&lt;td>0.994&lt;/td>
+&lt;td>8&lt;/td>
+&lt;td>1&lt;/td>
+&lt;td>153.01&lt;/td>
+&lt;td>1&lt;/td>
+&lt;td>496&lt;/td>
+&lt;td>15.0&lt;/td>
+&lt;td>7.56&lt;/td>
+&lt;td>1&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.044&lt;/td>
+&lt;td>0.994&lt;/td>
+&lt;td>8&lt;/td>
+&lt;td>1&lt;/td>
+&lt;td>156.58&lt;/td>
+&lt;td>1&lt;/td>
+&lt;td>494&lt;/td>
+&lt;td>15.1&lt;/td>
+&lt;td>7.56&lt;/td>
+&lt;td>1&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.050&lt;/td>
+&lt;td>0.992&lt;/td>
+&lt;td>255&lt;/td>
+&lt;td>31.9&lt;/td>
+&lt;td>5.42&lt;/td>
+&lt;td>28.9&lt;/td>
+&lt;td>7443&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>7.55&lt;/td>
+&lt;td>1&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.051&lt;/td>
+&lt;td>0.992&lt;/td>
+&lt;td>245&lt;/td>
+&lt;td>30.6&lt;/td>
+&lt;td>5.66&lt;/td>
+&lt;td>27.7&lt;/td>
+&lt;td>5201&lt;/td>
+&lt;td>1.4&lt;/td>
+&lt;td>7.55&lt;/td>
+&lt;td>1&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.060&lt;/td>
+&lt;td>0.992&lt;/td>
+&lt;td>261&lt;/td>
+&lt;td>32.6&lt;/td>
+&lt;td>5.28&lt;/td>
+&lt;td>29.7&lt;/td>
+&lt;td>773&lt;/td>
+&lt;td>9.6&lt;/td>
+&lt;td>7.55&lt;/td>
+&lt;td>1&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.062&lt;/td>
+&lt;td>0.992&lt;/td>
+&lt;td>265&lt;/td>
+&lt;td>33.1&lt;/td>
+&lt;td>5.22&lt;/td>
+&lt;td>30.0&lt;/td>
+&lt;td>382&lt;/td>
+&lt;td>19.5&lt;/td>
+&lt;td>7.55&lt;/td>
+&lt;td>1&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.070&lt;/td>
+&lt;td>0.993&lt;/td>
+&lt;td>255&lt;/td>
+&lt;td>31.9&lt;/td>
+&lt;td>5.40&lt;/td>
+&lt;td>29.0&lt;/td>
+&lt;td>388&lt;/td>
+&lt;td>19.2&lt;/td>
+&lt;td>7.55&lt;/td>
+&lt;td>1&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.070.fp16&lt;/td>
+&lt;td>0.993&lt;/td>
+&lt;td>282&lt;/td>
+&lt;td>35.3&lt;/td>
+&lt;td>4.87&lt;/td>
+&lt;td>32.2&lt;/td>
+&lt;td>227&lt;/td>
+&lt;td>32.8&lt;/td>
+&lt;td>3.78&lt;/td>
+&lt;td>2&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.070.bq-hamming-rerank&lt;/td>
+&lt;td>0.99&lt;/td>
+&lt;td>269&lt;/td>
+&lt;td>33.6&lt;/td>
+&lt;td>4.78&lt;/td>
+&lt;td>32.8&lt;/td>
+&lt;td>64&lt;/td>
+&lt;td>116.3&lt;/td>
+&lt;td>0.46&lt;/td>
+&lt;td>16.4&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.070.bq-jaccard-rerank&lt;/td>
+&lt;td>0.99&lt;/td>
+&lt;td>267&lt;/td>
+&lt;td>33.4&lt;/td>
+&lt;td>4.77&lt;/td>
+&lt;td>32.8&lt;/td>
+&lt;td>66&lt;/td>
+&lt;td>112.8&lt;/td>
+&lt;td>0.46&lt;/td>
+&lt;td>16.4&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;p>Again, we see a 100x+ speedup in index build time when using the &amp;ldquo;&lt;a href="https://jkatz.github.io/post/postgres/pgvector-scalar-binary-quantization/">binary quantization&lt;/a>&amp;rdquo; methods, and comparable performance results overall to what we had with the r7gd family. We can also see a more than 30x improvement in both throughput and latency as well. Here is a chart that shows how the index build times have decreased on the r7i:&lt;/p>
+&lt;p>&lt;img src="https://jkatz.github.io/images/pgvector-150x-r7gd-dbpedia.png" alt="pgvector-150x-r7i-dbpedia.png">&lt;/p>
+&lt;p>(I&amp;rsquo;ll note here I really need to level up my matplotlib skills; likely Excel too, as it was taking me awhile to get the data charted there. Anyway, this is all the charting I&amp;rsquo;m doing in this blog post).&lt;/p>
+&lt;p>As explored in the previous blog post on &lt;a href="post/postgres/pgvector-scalar-binary-quantization/">scalar and binary quantization&lt;/a>, we can&amp;rsquo;t always use binary quantization and achieve our recall target due to lack of bit diversity in the indexed vectors. We saw this with both the &lt;code>sift-128-euclidean&lt;/code> and &lt;code>gist-960-euclidean&lt;/code> datasets. However, both still have nice speedups over the course of the year.&lt;/p>
+&lt;p>Below are the results from the &lt;code>sift-128-euclidean&lt;/code> benchmark @ 99% recall on both architectures:&lt;/p>
+&lt;h3 id="sift-128-euclidean--99-recall-on-a-r7gd16xlarge">&lt;code>sift-128-euclidean&lt;/code> @ 99% recall on a r7gd.16xlarge&lt;/h3>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>Test&lt;/th>
+&lt;th>Recall&lt;/th>
+&lt;th>Single Connection Throughput (QPS)&lt;/th>
+&lt;th>QPS Speedup&lt;/th>
+&lt;th>p99 Latency (ms)&lt;/th>
+&lt;th>p99 Speedup&lt;/th>
+&lt;th>Index Build (s)&lt;/th>
+&lt;th>Index Build Speedup&lt;/th>
+&lt;th>Index Size (GiB)&lt;/th>
+&lt;th>Size Improvement&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>r7gd.041&lt;/td>
+&lt;td>0.999&lt;/td>
+&lt;td>33&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>44.05&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>58&lt;/td>
+&lt;td>41.6&lt;/td>
+&lt;td>0.51&lt;/td>
+&lt;td>1.5&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.044&lt;/td>
+&lt;td>0.999&lt;/td>
+&lt;td>33&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>42.39&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>59&lt;/td>
+&lt;td>40.9&lt;/td>
+&lt;td>0.51&lt;/td>
+&lt;td>1.5&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.050&lt;/td>
+&lt;td>0.994&lt;/td>
+&lt;td>432&lt;/td>
+&lt;td>13.1&lt;/td>
+&lt;td>2.98&lt;/td>
+&lt;td>14.8&lt;/td>
+&lt;td>2411&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>0.76&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.051&lt;/td>
+&lt;td>0.994&lt;/td>
+&lt;td>432&lt;/td>
+&lt;td>13.1&lt;/td>
+&lt;td>2.98&lt;/td>
+&lt;td>14.8&lt;/td>
+&lt;td>1933&lt;/td>
+&lt;td>1.2&lt;/td>
+&lt;td>0.76&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.060&lt;/td>
+&lt;td>0.994&lt;/td>
+&lt;td>453&lt;/td>
+&lt;td>13.7&lt;/td>
+&lt;td>2.84&lt;/td>
+&lt;td>15.5&lt;/td>
+&lt;td>67&lt;/td>
+&lt;td>36.0&lt;/td>
+&lt;td>0.76&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.062&lt;/td>
+&lt;td>0.994&lt;/td>
+&lt;td>458&lt;/td>
+&lt;td>13.9&lt;/td>
+&lt;td>2.81&lt;/td>
+&lt;td>15.7&lt;/td>
+&lt;td>57&lt;/td>
+&lt;td>42.3&lt;/td>
+&lt;td>0.76&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.070&lt;/td>
+&lt;td>0.994&lt;/td>
+&lt;td>487&lt;/td>
+&lt;td>14.8&lt;/td>
+&lt;td>2.65&lt;/td>
+&lt;td>16.6&lt;/td>
+&lt;td>56&lt;/td>
+&lt;td>43.1&lt;/td>
+&lt;td>0.76&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.070.fp16&lt;/td>
+&lt;td>0.994&lt;/td>
+&lt;td>482&lt;/td>
+&lt;td>14.6&lt;/td>
+&lt;td>2.68&lt;/td>
+&lt;td>16.4&lt;/td>
+&lt;td>48&lt;/td>
+&lt;td>50.2&lt;/td>
+&lt;td>0.52&lt;/td>
+&lt;td>1.5&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;h3 id="sift-128-euclidean--99-recall-on-a-r7i16xlarge">&lt;code>sift-128-euclidean&lt;/code> @ 99% recall on a r7i.16xlarge&lt;/h3>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>Test&lt;/th>
+&lt;th>Recall&lt;/th>
+&lt;th>Single Connection Throughput (QPS)&lt;/th>
+&lt;th>QPS Speedup&lt;/th>
+&lt;th>p99 Latency (ms)&lt;/th>
+&lt;th>p99 Speedup&lt;/th>
+&lt;th>Index Build (s)&lt;/th>
+&lt;th>Index Build Speedup&lt;/th>
+&lt;th>Index Size (GiB)&lt;/th>
+&lt;th>Size Improvement&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>r7i.041&lt;/td>
+&lt;td>0.999&lt;/td>
+&lt;td>31&lt;/td>
+&lt;td>1.1&lt;/td>
+&lt;td>48.57&lt;/td>
+&lt;td>1.1&lt;/td>
+&lt;td>43&lt;/td>
+&lt;td>51.3&lt;/td>
+&lt;td>0.51&lt;/td>
+&lt;td>1.5&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.044&lt;/td>
+&lt;td>0.999&lt;/td>
+&lt;td>29&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>51.34&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>44&lt;/td>
+&lt;td>50.2&lt;/td>
+&lt;td>0.51&lt;/td>
+&lt;td>1.5&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.050&lt;/td>
+&lt;td>0.994&lt;/td>
+&lt;td>436&lt;/td>
+&lt;td>15.0&lt;/td>
+&lt;td>2.96&lt;/td>
+&lt;td>17.3&lt;/td>
+&lt;td>2208&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>0.76&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.051&lt;/td>
+&lt;td>0.994&lt;/td>
+&lt;td>426&lt;/td>
+&lt;td>14.7&lt;/td>
+&lt;td>3.06&lt;/td>
+&lt;td>16.8&lt;/td>
+&lt;td>1722&lt;/td>
+&lt;td>1.3&lt;/td>
+&lt;td>0.76&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.060&lt;/td>
+&lt;td>0.994&lt;/td>
+&lt;td>503&lt;/td>
+&lt;td>17.3&lt;/td>
+&lt;td>2.57&lt;/td>
+&lt;td>20.0&lt;/td>
+&lt;td>581&lt;/td>
+&lt;td>3.8&lt;/td>
+&lt;td>0.76&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.062&lt;/td>
+&lt;td>0.994&lt;/td>
+&lt;td>497&lt;/td>
+&lt;td>17.1&lt;/td>
+&lt;td>2.57&lt;/td>
+&lt;td>20.0&lt;/td>
+&lt;td>74&lt;/td>
+&lt;td>29.8&lt;/td>
+&lt;td>0.76&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.070&lt;/td>
+&lt;td>0.994&lt;/td>
+&lt;td>492&lt;/td>
+&lt;td>17.0&lt;/td>
+&lt;td>2.60&lt;/td>
+&lt;td>19.7&lt;/td>
+&lt;td>74&lt;/td>
+&lt;td>29.8&lt;/td>
+&lt;td>0.76&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.070.fp16&lt;/td>
+&lt;td>0.994&lt;/td>
+&lt;td>544&lt;/td>
+&lt;td>18.8&lt;/td>
+&lt;td>2.36&lt;/td>
+&lt;td>21.8&lt;/td>
+&lt;td>62&lt;/td>
+&lt;td>35.6&lt;/td>
+&lt;td>0.52&lt;/td>
+&lt;td>1.5&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;p>Across the board, there are some nice speedups, including the 50x index build time improvement for the quantized &lt;code>halfvec&lt;/code> test (&lt;code>r7gd.070.fp16&lt;/code>), similar to the &lt;code>dbpedia-openai-1000k-angular&lt;/code> test.&lt;/p>
+&lt;p>Let&amp;rsquo;s take a quick look at the &lt;code>gist-960-euclidean&lt;/code> data. With the previous tests, we looked at the results targeting 99% recall, as the QPS/p99 speedups were more pronounced with those. However, &lt;code>gist-960-euclidean&lt;/code> tends to be particularly challenging to get good throughput/performance results at high recall (though with binary quantization, I can get over 6,000 QPS at 0% recall!), and interestingly I observed the best speedups at 90% recall.&lt;/p>
+&lt;h3 id="gist-960-euclidean--90-recall-on-a-r7gd16xlarge">&lt;code>gist-960-euclidean&lt;/code> @ 90% recall on a r7gd.16xlarge&lt;/h3>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>Test&lt;/th>
+&lt;th>Recall&lt;/th>
+&lt;th>Single Connection Throughput (QPS)&lt;/th>
+&lt;th>QPS Speedup&lt;/th>
+&lt;th>p99 Latency (ms)&lt;/th>
+&lt;th>p99 Speedup&lt;/th>
+&lt;th>Index Build (s)&lt;/th>
+&lt;th>Index Build Speedup&lt;/th>
+&lt;th>Index Size (GiB)&lt;/th>
+&lt;th>Size Improvement&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>r7gd.041&lt;/td>
+&lt;td>0.965&lt;/td>
+&lt;td>13&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>128.91&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>300&lt;/td>
+&lt;td>22.6&lt;/td>
+&lt;td>3.82&lt;/td>
+&lt;td>2.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.044&lt;/td>
+&lt;td>0.968&lt;/td>
+&lt;td>14&lt;/td>
+&lt;td>1.1&lt;/td>
+&lt;td>123.66&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>297&lt;/td>
+&lt;td>22.9&lt;/td>
+&lt;td>3.82&lt;/td>
+&lt;td>2.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.050&lt;/td>
+&lt;td>0.923&lt;/td>
+&lt;td>215&lt;/td>
+&lt;td>16.5&lt;/td>
+&lt;td>5.53&lt;/td>
+&lt;td>23.3&lt;/td>
+&lt;td>6787&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>7.50&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.051&lt;/td>
+&lt;td>0.924&lt;/td>
+&lt;td>215&lt;/td>
+&lt;td>16.5&lt;/td>
+&lt;td>5.59&lt;/td>
+&lt;td>23.1&lt;/td>
+&lt;td>4687&lt;/td>
+&lt;td>1.4&lt;/td>
+&lt;td>7.50&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.060&lt;/td>
+&lt;td>0.924&lt;/td>
+&lt;td>229&lt;/td>
+&lt;td>17.6&lt;/td>
+&lt;td>5.16&lt;/td>
+&lt;td>25.0&lt;/td>
+&lt;td>204&lt;/td>
+&lt;td>33.3&lt;/td>
+&lt;td>7.50&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.062&lt;/td>
+&lt;td>0.923&lt;/td>
+&lt;td>224&lt;/td>
+&lt;td>17.2&lt;/td>
+&lt;td>5.31&lt;/td>
+&lt;td>24.3&lt;/td>
+&lt;td>198&lt;/td>
+&lt;td>34.3&lt;/td>
+&lt;td>7.50&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.070&lt;/td>
+&lt;td>0.922&lt;/td>
+&lt;td>229&lt;/td>
+&lt;td>17.6&lt;/td>
+&lt;td>5.18&lt;/td>
+&lt;td>24.9&lt;/td>
+&lt;td>197&lt;/td>
+&lt;td>34.5&lt;/td>
+&lt;td>7.50&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.070.fp16&lt;/td>
+&lt;td>0.921&lt;/td>
+&lt;td>248&lt;/td>
+&lt;td>19.1&lt;/td>
+&lt;td>4.83&lt;/td>
+&lt;td>26.7&lt;/td>
+&lt;td>137&lt;/td>
+&lt;td>49.5&lt;/td>
+&lt;td>2.50&lt;/td>
+&lt;td>3.0&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;h3 id="gist-960-euclidean--90-recall-on-a-r7i16xlarge">&lt;code>gist-960-euclidean&lt;/code> @ 90% recall on a r7i.16xlarge&lt;/h3>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>Test&lt;/th>
+&lt;th>Recall&lt;/th>
+&lt;th>Single Connection Throughput (QPS)&lt;/th>
+&lt;th>QPS Speedup&lt;/th>
+&lt;th>p99 Latency (ms)&lt;/th>
+&lt;th>p99 Speedup&lt;/th>
+&lt;th>Index Build (s)&lt;/th>
+&lt;th>Index Build Speedup&lt;/th>
+&lt;th>Index Size (GiB)&lt;/th>
+&lt;th>Size Improvement&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>r7i.041&lt;/td>
+&lt;td>0.966&lt;/td>
+&lt;td>16&lt;/td>
+&lt;td>1.1&lt;/td>
+&lt;td>111.47&lt;/td>
+&lt;td>1.1&lt;/td>
+&lt;td>282&lt;/td>
+&lt;td>22.2&lt;/td>
+&lt;td>3.82&lt;/td>
+&lt;td>2.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.044&lt;/td>
+&lt;td>0.965&lt;/td>
+&lt;td>15&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>120.90&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>289&lt;/td>
+&lt;td>21.7&lt;/td>
+&lt;td>3.82&lt;/td>
+&lt;td>2.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.050&lt;/td>
+&lt;td>0.923&lt;/td>
+&lt;td>226&lt;/td>
+&lt;td>15.1&lt;/td>
+&lt;td>5.20&lt;/td>
+&lt;td>23.3&lt;/td>
+&lt;td>6273&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>7.50&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.051&lt;/td>
+&lt;td>0.925&lt;/td>
+&lt;td>228&lt;/td>
+&lt;td>15.2&lt;/td>
+&lt;td>5.26&lt;/td>
+&lt;td>23.0&lt;/td>
+&lt;td>4212&lt;/td>
+&lt;td>1.5&lt;/td>
+&lt;td>7.50&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.060&lt;/td>
+&lt;td>0.924&lt;/td>
+&lt;td>246&lt;/td>
+&lt;td>16.4&lt;/td>
+&lt;td>4.84&lt;/td>
+&lt;td>25.0&lt;/td>
+&lt;td>1109&lt;/td>
+&lt;td>5.7&lt;/td>
+&lt;td>7.50&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.062&lt;/td>
+&lt;td>0.923&lt;/td>
+&lt;td>245&lt;/td>
+&lt;td>16.3&lt;/td>
+&lt;td>4.88&lt;/td>
+&lt;td>24.8&lt;/td>
+&lt;td>301&lt;/td>
+&lt;td>20.8&lt;/td>
+&lt;td>7.50&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.070&lt;/td>
+&lt;td>0.924&lt;/td>
+&lt;td>238&lt;/td>
+&lt;td>15.9&lt;/td>
+&lt;td>4.97&lt;/td>
+&lt;td>24.3&lt;/td>
+&lt;td>295&lt;/td>
+&lt;td>21.3&lt;/td>
+&lt;td>7.50&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.070.fp16&lt;/td>
+&lt;td>0.921&lt;/td>
+&lt;td>271&lt;/td>
+&lt;td>18.1&lt;/td>
+&lt;td>4.33&lt;/td>
+&lt;td>27.9&lt;/td>
+&lt;td>180&lt;/td>
+&lt;td>34.9&lt;/td>
+&lt;td>2.50&lt;/td>
+&lt;td>3.0&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;p>Again, we can see the effects of parallelism on speeding up the HNSW builds, as well as the effects on shrinking the index size by using 2-byte floats. Also, similar to the &lt;code>sift-128-euclidean&lt;/code> test, we&amp;rsquo;re unable to use binary quantization to achieve 90% recall.&lt;/p>
+&lt;p>For completeness, here are a few more sets of results. I chose the &amp;ldquo;recall&amp;rdquo; values to optimize for where I saw the biggest performance gains:&lt;/p>
+&lt;h3 id="glove-25-angular--99-recall-on-a-r7gd16xlarge">&lt;code>glove-25-angular&lt;/code> @ 99% recall on a r7gd.16xlarge&lt;/h3>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>Test&lt;/th>
+&lt;th>Recall&lt;/th>
+&lt;th>Single Connection Throughput (QPS)&lt;/th>
+&lt;th>QPS Speedup&lt;/th>
+&lt;th>p99 Latency (ms)&lt;/th>
+&lt;th>p99 Speedup&lt;/th>
+&lt;th>Index Build (s)&lt;/th>
+&lt;th>Index Build Speedup&lt;/th>
+&lt;th>Index Size (GiB)&lt;/th>
+&lt;th>Size Improvement&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>r7gd.041&lt;/td>
+&lt;td>0.997&lt;/td>
+&lt;td>26&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>53.50&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>31&lt;/td>
+&lt;td>81.9&lt;/td>
+&lt;td>0.14&lt;/td>
+&lt;td>3.2&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.044&lt;/td>
+&lt;td>0.997&lt;/td>
+&lt;td>26&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>53.98&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>33&lt;/td>
+&lt;td>76.9&lt;/td>
+&lt;td>0.14&lt;/td>
+&lt;td>3.2&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.050&lt;/td>
+&lt;td>0.995&lt;/td>
+&lt;td>493&lt;/td>
+&lt;td>19.0&lt;/td>
+&lt;td>2.64&lt;/td>
+&lt;td>20.4&lt;/td>
+&lt;td>2538&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>0.45&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.051&lt;/td>
+&lt;td>0.995&lt;/td>
+&lt;td>495&lt;/td>
+&lt;td>19.0&lt;/td>
+&lt;td>2.64&lt;/td>
+&lt;td>20.4&lt;/td>
+&lt;td>1922&lt;/td>
+&lt;td>1.3&lt;/td>
+&lt;td>0.45&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.060&lt;/td>
+&lt;td>0.995&lt;/td>
+&lt;td>514&lt;/td>
+&lt;td>19.8&lt;/td>
+&lt;td>2.55&lt;/td>
+&lt;td>21.2&lt;/td>
+&lt;td>53&lt;/td>
+&lt;td>47.9&lt;/td>
+&lt;td>0.45&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.062&lt;/td>
+&lt;td>0.995&lt;/td>
+&lt;td>470&lt;/td>
+&lt;td>18.1&lt;/td>
+&lt;td>2.79&lt;/td>
+&lt;td>19.3&lt;/td>
+&lt;td>49&lt;/td>
+&lt;td>51.8&lt;/td>
+&lt;td>0.45&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.070&lt;/td>
+&lt;td>0.995&lt;/td>
+&lt;td>522&lt;/td>
+&lt;td>20.1&lt;/td>
+&lt;td>2.50&lt;/td>
+&lt;td>21.6&lt;/td>
+&lt;td>48&lt;/td>
+&lt;td>52.9&lt;/td>
+&lt;td>0.45&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.070.fp16&lt;/td>
+&lt;td>0.995&lt;/td>
+&lt;td>521&lt;/td>
+&lt;td>20.0&lt;/td>
+&lt;td>2.51&lt;/td>
+&lt;td>21.5&lt;/td>
+&lt;td>48&lt;/td>
+&lt;td>52.9&lt;/td>
+&lt;td>0.40&lt;/td>
+&lt;td>1.1&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;h3 id="glove-25-angular--99-recall-on-a-r7i16xlarge">&lt;code>glove-25-angular&lt;/code> @ 99% recall on a r7i.16xlarge&lt;/h3>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>Test&lt;/th>
+&lt;th>Recall&lt;/th>
+&lt;th>Single Connection Throughput (QPS)&lt;/th>
+&lt;th>QPS Speedup&lt;/th>
+&lt;th>p99 Latency (ms)&lt;/th>
+&lt;th>p99 Speedup&lt;/th>
+&lt;th>Index Build (s)&lt;/th>
+&lt;th>Index Build Speedup&lt;/th>
+&lt;th>Index Size (GiB)&lt;/th>
+&lt;th>Size Improvement&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>r7i.041&lt;/td>
+&lt;td>0.997&lt;/td>
+&lt;td>23&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>59.08&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>38&lt;/td>
+&lt;td>63.5&lt;/td>
+&lt;td>0.14&lt;/td>
+&lt;td>3.2&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.044&lt;/td>
+&lt;td>0.997&lt;/td>
+&lt;td>24&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>59.59&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>30&lt;/td>
+&lt;td>80.5&lt;/td>
+&lt;td>0.14&lt;/td>
+&lt;td>3.2&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.050&lt;/td>
+&lt;td>0.995&lt;/td>
+&lt;td>539&lt;/td>
+&lt;td>23.4&lt;/td>
+&lt;td>2.41&lt;/td>
+&lt;td>24.7&lt;/td>
+&lt;td>2414&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>0.45&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.051&lt;/td>
+&lt;td>0.995&lt;/td>
+&lt;td>545&lt;/td>
+&lt;td>23.7&lt;/td>
+&lt;td>2.39&lt;/td>
+&lt;td>24.9&lt;/td>
+&lt;td>1827&lt;/td>
+&lt;td>1.3&lt;/td>
+&lt;td>0.45&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.060&lt;/td>
+&lt;td>0.995&lt;/td>
+&lt;td>557&lt;/td>
+&lt;td>24.2&lt;/td>
+&lt;td>2.34&lt;/td>
+&lt;td>25.5&lt;/td>
+&lt;td>471&lt;/td>
+&lt;td>5.1&lt;/td>
+&lt;td>0.45&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.062&lt;/td>
+&lt;td>0.995&lt;/td>
+&lt;td>574&lt;/td>
+&lt;td>25.0&lt;/td>
+&lt;td>2.27&lt;/td>
+&lt;td>26.3&lt;/td>
+&lt;td>64&lt;/td>
+&lt;td>37.7&lt;/td>
+&lt;td>0.45&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.070&lt;/td>
+&lt;td>0.995&lt;/td>
+&lt;td>569&lt;/td>
+&lt;td>24.7&lt;/td>
+&lt;td>2.28&lt;/td>
+&lt;td>26.1&lt;/td>
+&lt;td>63&lt;/td>
+&lt;td>38.3&lt;/td>
+&lt;td>0.45&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.070.fp16&lt;/td>
+&lt;td>0.995&lt;/td>
+&lt;td>569&lt;/td>
+&lt;td>24.7&lt;/td>
+&lt;td>2.28&lt;/td>
+&lt;td>26.1&lt;/td>
+&lt;td>60&lt;/td>
+&lt;td>40.2&lt;/td>
+&lt;td>0.40&lt;/td>
+&lt;td>1.1&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;p>The interesting thing about both of these tests is that the IVFFlat index builds are both faster and smaller than the HNSW index builds - and that is without using any parallelism during the IVFFlat build. However, the HNSW numbers show a sigificant boost in throughput and p99 latency.&lt;/p>
+&lt;p>Finally, here are the results from the &lt;code>glove-100-angular&lt;/code> test. In my test, I wasn&amp;rsquo;t able to get much above 95% recall. I would likely need to increase the &lt;code>m&lt;/code> build parameter to get towards 99% recall, but as mentioned earlier, the goal of this testing was primarily to see how pgvector has improved over the course of the year and not optimize parameters for a particular dataset:&lt;/p>
+&lt;h3 id="glove-100-angular--95-recall-on-a-r7gd16xlarge">&lt;code>glove-100-angular&lt;/code> @ 95% recall on a r7gd.16xlarge&lt;/h3>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>Test&lt;/th>
+&lt;th>Recall&lt;/th>
+&lt;th>Single Connection Throughput (QPS)&lt;/th>
+&lt;th>QPS Speedup&lt;/th>
+&lt;th>p99 Latency (ms)&lt;/th>
+&lt;th>p99 Speedup&lt;/th>
+&lt;th>Index Build (s)&lt;/th>
+&lt;th>Index Build Speedup&lt;/th>
+&lt;th>Index Size (GiB)&lt;/th>
+&lt;th>Size Improvement&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>r7gd.041&lt;/td>
+&lt;td>0.963&lt;/td>
+&lt;td>29&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>47.10&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>68&lt;/td>
+&lt;td>58.0&lt;/td>
+&lt;td>0.48&lt;/td>
+&lt;td>1.7&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.044&lt;/td>
+&lt;td>0.963&lt;/td>
+&lt;td>29&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>46.20&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>69&lt;/td>
+&lt;td>57.1&lt;/td>
+&lt;td>0.48&lt;/td>
+&lt;td>1.7&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.050&lt;/td>
+&lt;td>0.965&lt;/td>
+&lt;td>65&lt;/td>
+&lt;td>2.2&lt;/td>
+&lt;td>21.05&lt;/td>
+&lt;td>2.2&lt;/td>
+&lt;td>3941&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>0.82&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.051&lt;/td>
+&lt;td>0.965&lt;/td>
+&lt;td>65&lt;/td>
+&lt;td>2.2&lt;/td>
+&lt;td>20.90&lt;/td>
+&lt;td>2.3&lt;/td>
+&lt;td>2965&lt;/td>
+&lt;td>1.3&lt;/td>
+&lt;td>0.82&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.060&lt;/td>
+&lt;td>0.965&lt;/td>
+&lt;td>63&lt;/td>
+&lt;td>2.2&lt;/td>
+&lt;td>21.22&lt;/td>
+&lt;td>2.2&lt;/td>
+&lt;td>83&lt;/td>
+&lt;td>47.5&lt;/td>
+&lt;td>0.82&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.062&lt;/td>
+&lt;td>0.965&lt;/td>
+&lt;td>62&lt;/td>
+&lt;td>2.1&lt;/td>
+&lt;td>21.68&lt;/td>
+&lt;td>2.2&lt;/td>
+&lt;td>78&lt;/td>
+&lt;td>50.5&lt;/td>
+&lt;td>0.82&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.070&lt;/td>
+&lt;td>0.965&lt;/td>
+&lt;td>66&lt;/td>
+&lt;td>2.3&lt;/td>
+&lt;td>20.07&lt;/td>
+&lt;td>2.3&lt;/td>
+&lt;td>77&lt;/td>
+&lt;td>51.2&lt;/td>
+&lt;td>0.82&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7gd.070.fp16&lt;/td>
+&lt;td>0.965&lt;/td>
+&lt;td>67&lt;/td>
+&lt;td>2.3&lt;/td>
+&lt;td>19.97&lt;/td>
+&lt;td>2.4&lt;/td>
+&lt;td>68&lt;/td>
+&lt;td>58.0&lt;/td>
+&lt;td>0.57&lt;/td>
+&lt;td>1.4&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;h3 id="glove-100-angular--95-recall-on-a-r7i16xlarge">&lt;code>glove-100-angular&lt;/code> @ 95% recall on a r7i.16xlarge&lt;/h3>
+&lt;table>
+&lt;thead>
+&lt;tr>
+&lt;th>Test&lt;/th>
+&lt;th>Recall&lt;/th>
+&lt;th>Single Connection Throughput (QPS)&lt;/th>
+&lt;th>QPS Speedup&lt;/th>
+&lt;th>p99 Latency (ms)&lt;/th>
+&lt;th>p99 Speedup&lt;/th>
+&lt;th>Index Build (s)&lt;/th>
+&lt;th>Index Build Speedup&lt;/th>
+&lt;th>Index Size (GiB)&lt;/th>
+&lt;th>Size Improvement&lt;/th>
+&lt;/tr>
+&lt;/thead>
+&lt;tbody>
+&lt;tr>
+&lt;td>r7i.041&lt;/td>
+&lt;td>0.963&lt;/td>
+&lt;td>27&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>50.43&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>53&lt;/td>
+&lt;td>66.8&lt;/td>
+&lt;td>0.48&lt;/td>
+&lt;td>1.7&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.044&lt;/td>
+&lt;td>0.962&lt;/td>
+&lt;td>26&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>52.13&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>56&lt;/td>
+&lt;td>63.3&lt;/td>
+&lt;td>0.48&lt;/td>
+&lt;td>1.7&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.050&lt;/td>
+&lt;td>0.965&lt;/td>
+&lt;td>81&lt;/td>
+&lt;td>3.1&lt;/td>
+&lt;td>16.70&lt;/td>
+&lt;td>3.1&lt;/td>
+&lt;td>3543&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;td>0.82&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.051&lt;/td>
+&lt;td>0.965&lt;/td>
+&lt;td>82&lt;/td>
+&lt;td>3.2&lt;/td>
+&lt;td>16.49&lt;/td>
+&lt;td>3.2&lt;/td>
+&lt;td>2517&lt;/td>
+&lt;td>1.4&lt;/td>
+&lt;td>0.82&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.060&lt;/td>
+&lt;td>0.965&lt;/td>
+&lt;td>79&lt;/td>
+&lt;td>3.0&lt;/td>
+&lt;td>16.64&lt;/td>
+&lt;td>3.1&lt;/td>
+&lt;td>692&lt;/td>
+&lt;td>5.1&lt;/td>
+&lt;td>0.82&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.062&lt;/td>
+&lt;td>0.965&lt;/td>
+&lt;td>83&lt;/td>
+&lt;td>3.2&lt;/td>
+&lt;td>15.90&lt;/td>
+&lt;td>3.3&lt;/td>
+&lt;td>98&lt;/td>
+&lt;td>36.2&lt;/td>
+&lt;td>0.82&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.070&lt;/td>
+&lt;td>0.965&lt;/td>
+&lt;td>81&lt;/td>
+&lt;td>3.1&lt;/td>
+&lt;td>16.27&lt;/td>
+&lt;td>3.2&lt;/td>
+&lt;td>95&lt;/td>
+&lt;td>37.3&lt;/td>
+&lt;td>0.82&lt;/td>
+&lt;td>1.0&lt;/td>
+&lt;/tr>
+&lt;tr>
+&lt;td>r7i.070.fp16&lt;/td>
+&lt;td>0.965&lt;/td>
+&lt;td>86&lt;/td>
+&lt;td>3.3&lt;/td>
+&lt;td>15.27&lt;/td>
+&lt;td>3.4&lt;/td>
+&lt;td>84&lt;/td>
+&lt;td>42.2&lt;/td>
+&lt;td>0.57&lt;/td>
+&lt;td>1.4&lt;/td>
+&lt;/tr>
+&lt;/tbody>
+&lt;/table>
+&lt;p>Overall with &lt;code>glove-100-angular&lt;/code> on the selected build parameters, there are definite speedups on build times for HNSW indexes, and we do see improvements in throughput/latency. For this specific dataset, I&amp;rsquo;d recommend rerunning it with different HNSW build parameters to see if we can improve query performance numbers at higher levels of recall, but that&amp;rsquo;s an experiment for another day.&lt;/p>
+&lt;h2 id="where-do-we-go-from-here">Where do we go from here?&lt;/h2>
+&lt;p>It&amp;rsquo;s been quite a year for pgvector on many fronts, not to say the least the many people who are already building amazing apps with it today! A &amp;ldquo;billion-scale&amp;rdquo; vector storage problem is attainable with pgvector today, much of this attributed to the work of the last year. And while I can&amp;rsquo;t say enough about the work &lt;a href="https://github.com/ankane">Andrew Kane&lt;/a> has done on pgvector, I do want to give mentions to &lt;a href="https://github.com/hlinnaka">Heikki Linnakangas&lt;/a>, &lt;a href="https://github.com/nathan-bossart">Nathan Bossart&lt;/a>, &lt;a href="https://github.com/pashkinelfe">Pavel Borisov&lt;/a>, and &lt;a href="https://github.com/aytekinar">Arda Aytekin&lt;/a> who all made contributions to improve pgvector performance (and apologies if I missed someone).&lt;/p>
+&lt;p>However, much like the &lt;a href="https://jkatz05.com/post/postgres/postgresql-2024/">&lt;em>almost&lt;/em> 40-year-old database PostgreSQL&lt;/a>, there are still ways pgvector can continue to grow. I&amp;rsquo;m going to talk more in depth about some &lt;a href="https://www.pgevents.ca/events/pgconfdev2024/schedule/session/1-vectors-how-to-better-support-a-nasty-data-type-in-postgresql/">longer term goals to better support vector workloads with pgvector and PostgreSQL&lt;/a> at &lt;a href="https://2024.pgconf.dev/">PGConf.dev 2024&lt;/a>, but I&amp;rsquo;ll give a brief preview here.&lt;/p>
+&lt;p>Over the past year, pgvector has made significant gains across the board in index build times, index sizes, throughput, and latency, particularly on vector queries over an entire vector data set. Simplifying &lt;a href="https://github.com/pgvector/pgvector/?tab=readme-ov-file#filtering">filtering&lt;/a> (aka the &lt;code>WHERE&lt;/code> clause) - pgvector and PostgreSQL already support this, but there are some areas we can make it easier and more efficient. Additionally, there are other search patterns that are gaining popularity, such as &amp;ldquo;hybrid search&amp;rdquo; like using simultaneously vector similarity search and fulltext search to return results. Again, this is something already supported by PostgreSQL natively, but there are areas we can simplify this process with pgvector. We&amp;rsquo;re seeing more work in pgvector to support hardware acceleration; this combined with further optimizations on And finally, there are some areas of PostgresQL we can prove to better support &lt;a href="https://jkatz.github.io/post/postgres/distributed-pgvector/">distributed pgvector workloads&lt;/a>, but I&amp;rsquo;ll still emphasize that most workloads that involve PostgreSQL and pgvector will scale vertically (which means showing more concurrency testing!).&lt;/p>
+&lt;p>We&amp;rsquo;ll also have to see how vector search workloads evolve, as that will also dictate what new features we&amp;rsquo;ll see in pgvector. Please keep giving feedback on what you&amp;rsquo;re building with pgvector and how your experience is - as that is how we can continue to make the project better!&lt;/p></description></item><item><title>Scalar and binary quantization for pgvector vector search and storage</title><link>https://jkatz.github.io/post/postgres/pgvector-scalar-binary-quantization/</link><pubDate>Tue, 09 Apr 2024 00:00:00 +0000</pubDate><guid>https://jkatz.github.io/post/postgres/pgvector-scalar-binary-quantization/</guid><description>&lt;p>While many AI/ML embedding models generate vectors that provide large amounts of information by using high dimensionality, this can come at the cost of using more memory for searches and more overall storage. Both of these can have an impact on the cost and performance of a system that&amp;rsquo;s storing vectors, including when using &lt;a href="https://www.postgresql.org/">PostgreSQL&lt;/a> with the &lt;a href="https://github.com/pgvector/pgvector/">pgvector&lt;/a> for these use cases.&lt;/p>
+&lt;p>When I &lt;a href="https://jkatz05.com/talks/">talk&lt;/a> about &lt;a href="https://www.youtube.com/watch?v=PhIC4JlYg7A&amp;amp;ab_channel=AWSEvents">vector search in PostgreSQL&lt;/a>, I have a slide that I like to call &amp;ldquo;no shortcuts without tradeoffs&amp;rdquo; that calls out the different challenges around searching vectors in a database. I first like to highlight that a 1,536 dimensional vector with 4-byte floating point (&lt;code>fp32&lt;/code>) dimensions requires 6KiB of storage. That may not seem like a lot, but storing 1,000,000 of these vectors in a PostgreSQL database requires 5.7GB of storage without any indexing. And again, that may not seem like a lot, but a single database row is closer to 600B of data (and typically even less than that) than 6KB.&lt;/p>
 &lt;p>The next point I talk about is compression: unfortunately, you just can&amp;rsquo;t compress a bunch of seemingly random floating point numbers. However, there are techniques to reduce the amount of information that you can store, from &lt;a href="https://en.wikipedia.org/wiki/Principal_component_analysis">principal component analysis&lt;/a> (aka &lt;a href="https://en.wikipedia.org/wiki/Principal_component_analysis">PCA&lt;/a>), which can reduce the overall dimensionality, to quantization techniques that can reduce the size or overall number of dimensions of a vector. These can reduce your overall storage and memory requirements &amp;ndash; and perhaps even improve performance in certain areas, but recall that I mentioned there are no shortcuts without tradeoffs. To use quantization for vector searches, we&amp;rsquo;ll have to give something up, whether it&amp;rsquo;s in the overall relevancy of our searches (&lt;a href="https://en.wikipedia.org/wiki/Precision_and_recall">recall&lt;/a>) or in some area of performance in our system.&lt;/p>
 &lt;p>There are three common quantization techniques around vector databases:&lt;/p>
 &lt;ul>
@@ -1222,7 +2650,7 @@ The PostgreSQL Global Development Group remains committed to making PostgreSQL a
 &lt;/ul>
 &lt;p>Recall is measured from 0 to 1 (0% to 100% relevant results returned). Queries per second (QPS) is measured in how many queries complete per second :)&lt;/p>
 &lt;h4 id="sift-128-euclidean">sift-128-euclidean&lt;/h4>
-&lt;p>&lt;img alt="pgvector-distributed-sift128-recall.png" src="https://jkatz.github.io/images/pgvector-distributed-sift128-recall.png">&lt;/p>
+&lt;p>&lt;img src="https://jkatz.github.io/images/pgvector-distributed-sift128-recall.png" alt="pgvector-distributed-sift128-recall.png">&lt;/p>
 &lt;table>
 &lt;thead>
 &lt;tr>
@@ -1274,7 +2702,7 @@ The PostgreSQL Global Development Group remains committed to making PostgreSQL a
 &lt;/tr>
 &lt;/tbody>
 &lt;/table>
-&lt;p>&lt;img alt="pgvector-distributed-sift128-qps.png" src="https://jkatz.github.io/images/pgvector-distributed-sift128-qps.png">&lt;/p>
+&lt;p>&lt;img src="https://jkatz.github.io/images/pgvector-distributed-sift128-qps.png" alt="pgvector-distributed-sift128-qps.png">&lt;/p>
 &lt;table>
 &lt;thead>
 &lt;tr>
@@ -1327,7 +2755,7 @@ The PostgreSQL Global Development Group remains committed to making PostgreSQL a
 &lt;/tbody>
 &lt;/table>
 &lt;h4 id="dbpedia-openai-1000k-angular">dbpedia-openai-1000k-angular&lt;/h4>
-&lt;p>&lt;img alt="pgvector-distributed-dbpedia1000k-recall.png" src="https://jkatz.github.io/images/pgvector-distributed-dbpedia1000k-recall.png">&lt;/p>
+&lt;p>&lt;img src="https://jkatz.github.io/images/pgvector-distributed-dbpedia1000k-recall.png" alt="pgvector-distributed-dbpedia1000k-recall.png">&lt;/p>
 &lt;table>
 &lt;thead>
 &lt;tr>
@@ -1379,7 +2807,7 @@ The PostgreSQL Global Development Group remains committed to making PostgreSQL a
 &lt;/tr>
 &lt;/tbody>
 &lt;/table>
-&lt;p>&lt;img alt="pgvector-distributed-dbpedia1000k-qps.png" src="https://jkatz.github.io/images/pgvector-distributed-dbpedia1000k-qps.png">&lt;/p>
+&lt;p>&lt;img src="https://jkatz.github.io/images/pgvector-distributed-dbpedia1000k-qps.png" alt="pgvector-distributed-dbpedia1000k-qps.png">&lt;/p>
 &lt;table>
 &lt;thead>
 &lt;tr>
@@ -1432,7 +2860,7 @@ The PostgreSQL Global Development Group remains committed to making PostgreSQL a
 &lt;/tbody>
 &lt;/table>
 &lt;h4 id="gist-960-euclidean">gist-960-euclidean&lt;/h4>
-&lt;p>&lt;img alt="pgvector-distributed-gist960-recall.png" src="https://jkatz.github.io/images/pgvector-distributed-gist960-recall.png">&lt;/p>
+&lt;p>&lt;img src="https://jkatz.github.io/images/pgvector-distributed-gist960-recall.png" alt="pgvector-distributed-gist960-recall.png">&lt;/p>
 &lt;table>
 &lt;thead>
 &lt;tr>
@@ -1484,7 +2912,7 @@ The PostgreSQL Global Development Group remains committed to making PostgreSQL a
 &lt;/tr>
 &lt;/tbody>
 &lt;/table>
-&lt;p>&lt;img alt="pgvector-distributed-gist960-qps.png" src="https://jkatz.github.io/images/pgvector-distributed-gist960-qps.png">&lt;/p>
+&lt;p>&lt;img src="https://jkatz.github.io/images/pgvector-distributed-gist960-qps.png" alt="pgvector-distributed-gist960-qps.png">&lt;/p>
 &lt;table>
 &lt;thead>
 &lt;tr>
@@ -1790,9 +3218,9 @@ The PostgreSQL Global Development Group remains committed to making PostgreSQL a
 &lt;p>While these are thoughts for what PostgreSQL can do in 2024 and beyond, there&amp;rsquo;s so much PostgreSQL already does today. In fact, asking questions like &amp;ldquo;where is PostgreSQL going&amp;rdquo; does give us an opportunity to step back and reflect on all the progress PostgreSQL has made over the past several years while looking ahead on what is to come!&lt;/p></description></item><item><title>pgvector 0.5.0 Feature Highlights and HOWTOs</title><link>https://jkatz.github.io/post/postgres/pgvector-overview-0.5.0/</link><pubDate>Mon, 28 Aug 2023 00:00:00 +0000</pubDate><guid>https://jkatz.github.io/post/postgres/pgvector-overview-0.5.0/</guid><description>&lt;p>It&amp;rsquo;s here! &lt;a href="https://github.com/pgvector/pgvector/releases/tag/v0.5.0">pgvector 0.5.0&lt;/a> is released and has some incredible new features. &lt;a href="https://github.com/pgvector/pgvector">pgvector&lt;/a> is an open-source project that brings &lt;a href="https://jkatz.github.io/post/postgres/vectors-json-postgresql/">vector database capabilities to PostgreSQL&lt;/a>. The pgvector community is moving very rapidly on adding new features, so I thought it prudent to put together some highlights of the 0.5.0 release.&lt;/p>
 &lt;p>Here&amp;rsquo;s a quick list of highlights, though I encourage you read the rest in depth and explore on your own!&lt;/p>
 &lt;ul>
-&lt;li>&lt;a href="https://jkatz.github.io/post/postgres/pgvector-overview-0.5.0/#new-index-type-hierarchical-navigable-small-worlds-hnsw">HNSW indexing support&lt;/a>&lt;/li>
-&lt;li>&lt;a href="https://jkatz.github.io/post/postgres/pgvector-overview-0.5.0/#improved-performance-of-distance-functions">Faster distance calculations&lt;/a>&lt;/li>
-&lt;li>&lt;a href="https://jkatz.github.io/post/postgres/pgvector-overview-0.5.0/#parallelization-of-ivfflat-index-builds">Parallel builds for &lt;code>ivfflat&lt;/code>&lt;/a>&lt;/li>
+&lt;li>&lt;a href="#new-index-type-hierarchical-navigable-small-worlds-hnsw">HNSW indexing support&lt;/a>&lt;/li>
+&lt;li>&lt;a href="#improved-performance-of-distance-functions">Faster distance calculations&lt;/a>&lt;/li>
+&lt;li>&lt;a href="#parallelization-of-ivfflat-index-builds">Parallel builds for &lt;code>ivfflat&lt;/code>&lt;/a>&lt;/li>
 &lt;/ul>
 &lt;p>This is a big release, so let&amp;rsquo;s dive right in.&lt;/p>
 &lt;h2 id="new-index-type-hierarchical-navigable-small-worlds-hnsw">New index type: Hierarchical Navigable Small Worlds (&lt;code>hnsw&lt;/code>)&lt;/h2>
@@ -1804,7 +3232,7 @@ The PostgreSQL Global Development Group remains committed to making PostgreSQL a
 &lt;li>&lt;strong>Concurrent inserts&lt;/strong>: Additionally, pgvector&amp;rsquo;s HNSW implementations lets you concurrently insert values into the index, making it easier to simultaneously load data from multiple sources.&lt;/li>
 &lt;/ul>
 &lt;p>In a previous post, I went into depth on the &lt;a href="https://jkatz.github.io/post/postgres/pgvector-hnsw-performance/">HNSW performance for pgvector&lt;/a> with benchmarks that compared it to &lt;code>ivfflat&lt;/code> and &lt;code>pg_embedding&lt;/code>&amp;rsquo;s HNSW implementation. The chart below shows the performance/recall tradeoffs on OpenAI-style embedding data using cosine distance (for &lt;a href="https://jkatz.github.io/post/postgres/pgvector-hnsw-performance/">full testing methodology&lt;/a> and the &lt;a href="https://github.com/erikbern/ann-benchmarks">ANN Benchmark framework&lt;/a>. Please read the &lt;a href="https://jkatz.github.io/post/postgres/pgvector-hnsw-performance/">previous post&lt;/a>) for more details on the test methodology and other considerations (index build time, index size on disk):&lt;/p>
-&lt;p>&lt;img alt="dbpedia-openai-1000k-angular.png" src="https://jkatz.github.io/images/dbpedia-openai-1000k-angular.png">&lt;/p>
+&lt;p>&lt;img src="https://jkatz.github.io/images/dbpedia-openai-1000k-angular.png" alt="dbpedia-openai-1000k-angular.png">&lt;/p>
 &lt;p>Instead of focusing on benchmarking in this post, I want to provide guidance on how to use the key parameters in &lt;code>hnsw&lt;/code> so you understand the ramifications on your performance/recall ratio and index build times.&lt;/p>
 &lt;p>In the &lt;a href="https://jkatz.github.io/post/postgres/pgvector-hnsw-performance/">previous post&lt;/a>, we reviewed the 3 parameters that are part of the HNSW algorithm. We&amp;rsquo;ll break them down to where they are applicable in pgvector&amp;rsquo;s &lt;code>hnsw&lt;/code> implementation:&lt;/p>
 &lt;h3 id="index-building-options">Index building options&lt;/h3>
@@ -2244,7 +3672,7 @@ The PostgreSQL Global Development Group remains committed to making PostgreSQL a
 &lt;/tr>
 &lt;/tbody>
 &lt;/table>
-&lt;p>&lt;img alt="mnist-784-euclidean.png" src="https://jkatz.github.io/images/mnist-784-euclidean.png">&lt;/p>
+&lt;p>&lt;img src="https://jkatz.github.io/images/mnist-784-euclidean.png" alt="mnist-784-euclidean.png">&lt;/p>
 &lt;p>Analysis:&lt;/p>
 &lt;ul>
 &lt;li>This is the case-in-point why you must measure both performance and recall. From a pure performance standpoint, pgvector&amp;rsquo;s &lt;code>ivfflat&lt;/code> index does have higher QPS (though not by much compared to pgvector&amp;rsquo;s &lt;code>hnsw&lt;/code>), but at a great expense with recall.&lt;/li>
@@ -2342,7 +3770,7 @@ The PostgreSQL Global Development Group remains committed to making PostgreSQL a
 &lt;/tr>
 &lt;/tbody>
 &lt;/table>
-&lt;p>&lt;img alt="sift-128-euclidean.png" src="https://jkatz.github.io/images/sift-128-euclidean.png">&lt;/p>
+&lt;p>&lt;img src="https://jkatz.github.io/images/sift-128-euclidean.png" alt="sift-128-euclidean.png">&lt;/p>
 &lt;p>Analysis:&lt;/p>
 &lt;ul>
 &lt;li>Again, it&amp;rsquo;s crucial to look at both performance and recall. &lt;code>ivfflat&lt;/code> has high throughput, but on this test, it underperforms both &lt;code>hnsw&lt;/code> implementations when looking at the same relative recall.&lt;/li>
@@ -2407,7 +3835,7 @@ The PostgreSQL Global Development Group remains committed to making PostgreSQL a
 &lt;/tr>
 &lt;/tbody>
 &lt;/table>
-&lt;p>&lt;img alt="gist-960-euclidean.png" src="https://jkatz.github.io/images/gist-960-euclidean.png">&lt;/p>
+&lt;p>&lt;img src="https://jkatz.github.io/images/gist-960-euclidean.png" alt="gist-960-euclidean.png">&lt;/p>
 &lt;p>Analysis:&lt;/p>
 &lt;ul>
 &lt;li>From both a performance/recall standpoint, pgvector&amp;rsquo;s HNSW implementation outperforms pg_embedding on this data set, though the gap closes for higher values of &lt;code>ef_search&lt;/code>.&lt;/li>
@@ -2490,7 +3918,7 @@ The PostgreSQL Global Development Group remains committed to making PostgreSQL a
 &lt;/tr>
 &lt;/tbody>
 &lt;/table>
-&lt;p>&lt;img alt="dbpedia-openai-1000k-angular.png" src="https://jkatz.github.io/images/dbpedia-openai-1000k-angular.png">&lt;/p>
+&lt;p>&lt;img src="https://jkatz.github.io/images/dbpedia-openai-1000k-angular.png" alt="dbpedia-openai-1000k-angular.png">&lt;/p>
 &lt;p>Analysis:&lt;/p>
 &lt;ul>
 &lt;li>pgvector&amp;rsquo;s HNSW implementation has better performance/recall ratio than the other algorithms by a fairly wide margin.&lt;/li>
