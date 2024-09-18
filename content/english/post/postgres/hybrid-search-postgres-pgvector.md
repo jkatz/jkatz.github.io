@@ -235,7 +235,7 @@ The below query will let us perform a hybrid search. We'll target `10` results i
 SELECT
     searches.id,
     searches.description,
-    sum(rrf_score(rank) + rrf_score(searches.rank)) AS score
+    sum(rrf_score(searches.rank)) AS score
 FROM (
 	(
 		SELECT
@@ -246,7 +246,7 @@ FROM (
 		ORDER BY $1 <=> embedding
 		LIMIT 40
 	)
-	UNION
+	UNION ALL
 	(
 		SELECT
 			id,
@@ -269,16 +269,16 @@ which yields the following result:
 ```
   id   | description                 |         score          
 -------+-----------------------------+------------------------
- 18548 | ... travel computer ...     | 0.07492997198879551820
-  7372 | ... travel computer ...     | 0.03921568627450980392
- 12875 | ... computer travel ...     | 0.03921568627450980392
- 10578 | ... travel ... computer ... | 0.03921568627450980392
- 39214 | ... travel computer ...     | 0.03921568627450980392
- 49374 | ... travel computer ...     | 0.03921568627450980392
-  3712 | ... travel computer ...     | 0.03921568627450980392
- 20763 | ... computer ...            | 0.03846153846153846154
- 20894 | ... computer ...            | 0.03773584905660377358
-   838 | Computer ...                | 0.03703703703703703704
+ 18548 | ... travel computer ...     | 0.03746498599439775910
+  7372 | ... travel computer ...     | 0.01960784313725490196
+ 12875 | ... computer travel ...     | 0.01960784313725490196
+ 10578 | ... travel ... computer ... | 0.01960784313725490196
+ 39214 | ... travel computer ...     | 0.01960784313725490196
+ 49374 | ... travel computer ...     | 0.01960784313725490196
+  3712 | ... travel computer ...     | 0.01960784313725490196
+ 20763 | ... computer ...            | 0.01923076923076923077
+ 20894 | ... computer ...            | 0.01886792452830188679
+   838 | Computer ...                | 0.01851851851851851852
 ```
 
 We can see that in our hybrid search, `18548` has the top RRF score; the other entries that contained "travel computer" tied for 2nd, followed by three of the top 10 semantic search results rounding out the list. Again, I wouldn't read too much into this given the dataset, but it seems like a hybrid search method has the potential to boost the recall of our result set.
@@ -311,7 +311,7 @@ ORDER BY rank
 LIMIT 40
 ```
 
-Each of these queries returns 40 results. We now need a way to combine them, which is what [`UNION`](https://www.postgresql.org/docs/current/queries-union.html) does:
+Each of these queries returns 40 results. We now need a way to combine them, which is what [`UNION ALL`](https://www.postgresql.org/docs/current/queries-union.html) does:
 
 ```sql
 (
@@ -323,7 +323,7 @@ Each of these queries returns 40 results. We now need a way to combine them, whi
     ORDER BY $1 <=> embedding
     LIMIT 40
 )
-UNION
+UNION ALL
 (
     SELECT
         id,
@@ -337,13 +337,13 @@ UNION
 )
 ```
 
-Now that we've combined the two queries, we need to calculate the final score. To do this, we first give our subquery a name - we'll call it `searchers` (`FROM ( ... ) searches`). We then figure out how we're going to combine or aggregate our results. Recall that `rrf_score` has the ability to handle `NULL` data (`COALESCE(1.0 / ($1 + $2), 0.0)`). This lets us use the `sum` aggregate function to combine results: if a row is found in both subqueries, its scores will be added up, and if a row is only present in one search, its score will be added to `0`. Finally, we have to group by our "unique" identifiers (the row ID and its description), order the results starting with the top score (`ORDER BY score DESC`), and limit our results to `10`. The abbreviated example of this query is below:
+Now that we've combined the two queries, we need to calculate the final score. To do this, we first give our subquery a name - we'll call it `searches` (`FROM ( ... ) searches`). We then figure out how we're going to combine or aggregate our results. Recall that `rrf_score` has the ability to handle `NULL` data (`COALESCE(1.0 / ($1 + $2), 0.0)`). This lets us use the `sum` aggregate function to combine results: if a row is found in both subqueries, its scores will be added up, and if a row is only present in one search, its score will be added to `0`. Finally, we have to group by our "unique" identifiers (the row ID and its description), order the results starting with the top score (`ORDER BY score DESC`), and limit our results to `10`. The abbreviated example of this query is below:
 
 ```sql
 SELECT
     searches.id,
     searches.description,
-    sum(rrf_score(rank) + rrf_score(searches.rank)) AS score
+    sum(rrf_score(searches.rank)) AS score
 FROM (
     -- UNION'd queries
 ) searches
@@ -355,40 +355,37 @@ LIMIT 10;
 How about performance? As I mentioned at the top of the blog post, I can't do a rigorous performance analysis here due to the lack of a ground-truth dataset, and this is only a dataset of 50K rows. That said, I'm happy to show the [`EXPLAIN`](https://www.postgresql.org/docs/current/sql-explain.html) plan that was generated. Below is the output of `EXPLAIN ANALYZE` on this query to show that both indexes were used:
 
 ```
-Limit  (cost=791.06..791.09 rows=10 width=68) (actual time=9.451..9.454 rows=10 loops=1)
-   ->  Sort  (cost=791.06..791.26 rows=80 width=68) (actual time=9.450..9.453 rows=10 loops=1)
-         Sort Key: (sum((COALESCE((1.0 / (("*SELECT* 1".rank + 50))::numeric), 0.0) + COALESCE((1.0 / (("*SELECT* 1".rank + 50))::numeric), 0.0)))) DESC
+ Limit  (cost=789.66..789.69 rows=10 width=365) (actual time=8.516..8.519 rows=10 loops=1)
+   ->  Sort  (cost=789.66..789.86 rows=80 width=365) (actual time=8.515..8.518 rows=10 loops=1)
+         Sort Key: (sum(COALESCE((1.0 / (("*SELECT* 1".rank + 50))::numeric), 0.0))) DESC
          Sort Method: top-N heapsort  Memory: 32kB
-         ->  GroupAggregate  (cost=786.13..789.33 rows=80 width=68) (actual time=9.353..9.429 rows=79 loops=1)
+         ->  GroupAggregate  (cost=785.53..787.93 rows=80 width=365) (actual time=8.435..8.495 rows=79 loops=1)
                Group Key: "*SELECT* 1".id, "*SELECT* 1".description
-               ->  Sort  (cost=786.13..786.33 rows=80 width=44) (actual time=9.345..9.351 rows=80 loops=1)
+               ->  Sort  (cost=785.53..785.73 rows=80 width=341) (actual time=8.430..8.436 rows=80 loops=1)
                      Sort Key: "*SELECT* 1".id, "*SELECT* 1".description
                      Sort Method: quicksort  Memory: 53kB
-                     ->  HashAggregate  (cost=782.80..783.60 rows=80 width=44) (actual time=9.317..9.328 rows=80 loops=1)
-                           Group Key: "*SELECT* 1".id, "*SELECT* 1".description, "*SELECT* 1".rank
-                           Batches: 1  Memory Usage: 80kB
-                           ->  Append  (cost=84.60..782.20 rows=80 width=44) (actual time=1.634..9.281 rows=80 loops=1)
-                                 ->  Subquery Scan on "*SELECT* 1"  (cost=84.60..125.12 rows=40 width=341) (actual time=1.633..1.739 rows=40 loops=1)
-                                       ->  Limit  (cost=84.60..125.12 rows=40 width=349) (actual time=1.632..1.734 rows=40 loops=1)
-                                             ->  WindowAgg  (cost=84.60..50736.60 rows=50000 width=349) (actual time=1.632..1.730 rows=40 loops=1)
-                                                   ->  Index Scan using products_embeddings_hnsw_idx on products  (cost=84.60..49861.60 rows=50000 width=341) (actual time=1.626..1.704 rows=40 loops=1)
-                                                         Order By: (embedding <=> '<redacted>'::vector)
-                                 ->  Subquery Scan on "*SELECT* 2"  (cost=656.58..656.68 rows=40 width=341) (actual time=7.525..7.535 rows=40 loops=1)
-                                       ->  Limit  (cost=656.58..656.68 rows=40 width=345) (actual time=7.524..7.529 rows=40 loops=1)
-                                             ->  Sort  (cost=656.58..656.89 rows=124 width=345) (actual time=7.523..7.526 rows=40 loops=1)
-                                                   Sort Key: (rank() OVER (?))
-                                                   Sort Method: top-N heapsort  Memory: 44kB
-                                                   ->  WindowAgg  (cost=588.18..652.66 rows=124 width=345) (actual time=7.432..7.494 rows=139 loops=1)
-                                                         ->  Sort  (cost=588.18..588.49 rows=124 width=337) (actual time=7.429..7.437 rows=139 loops=1)
-                                                               Sort Key: (ts_rank_cd(to_tsvector(products_1.description), plainto_tsquery('travel computer'::text))) DESC
-                                                               Sort Method: quicksort  Memory: 79kB
-                                                               ->  Bitmap Heap Scan on products products_1  (cost=30.38..583.87 rows=124 width=337) (actual time=0.282..7.396 rows=139 loops=1)
-                                                                     Recheck Cond: ('''travel'' & ''comput'''::tsquery @@ to_tsvector('english'::regconfig, description))
-                                                                     Heap Blocks: exact=138
-                                                                     ->  Bitmap Index Scan on products_description_gin_idx  (cost=0.00..30.35 rows=124 width=0) (actual time=0.191..0.191 rows=139 loops=1)
-                                                                           Index Cond: (to_tsvector('english'::regconfig, description) @@ '''travel'' & ''comput'''::tsquery)
- 
- Execution Time: 9.505 ms
+                     ->  Append  (cost=84.60..783.00 rows=80 width=341) (actual time=0.877..8.414 rows=80 loops=1)
+                           ->  Subquery Scan on "*SELECT* 1"  (cost=84.60..125.52 rows=40 width=341) (actual time=0.877..0.949 rows=40 loops=1)
+                                 ->  Limit  (cost=84.60..125.12 rows=40 width=349) (actual time=0.876..0.945 rows=40 loops=1)
+                                       ->  WindowAgg  (cost=84.60..50736.60 rows=50000 width=349) (actual time=0.876..0.942 rows=40 loops=1)
+                                             ->  Index Scan using products_embeddings_hnsw_idx on products  (cost=84.60..49861.60 rows=50000 width=341) (actual time=0.872..0.919 rows=40 loops=1)
+                                                   Order By: (embedding <=> '<redacted>'::vector)
+                           ->  Subquery Scan on "*SELECT* 2"  (cost=656.58..657.08 rows=40 width=341) (actual time=7.448..7.458 rows=40 loops=1)
+                                 ->  Limit  (cost=656.58..656.68 rows=40 width=345) (actual time=7.447..7.453 rows=40 loops=1)
+                                       ->  Sort  (cost=656.58..656.89 rows=124 width=345) (actual time=7.447..7.449 rows=40 loops=1)
+                                             Sort Key: (rank() OVER (?))
+                                             Sort Method: top-N heapsort  Memory: 44kB
+                                             ->  WindowAgg  (cost=588.18..652.66 rows=124 width=345) (actual time=7.357..7.419 rows=139 loops=1)
+                                                   ->  Sort  (cost=588.18..588.49 rows=124 width=337) (actual time=7.355..7.363 rows=139 loops=1)
+                                                         Sort Key: (ts_rank_cd(to_tsvector(products_1.description), plainto_tsquery('travel computer'::text))) DESC
+                                                         Sort Method: quicksort  Memory: 79kB
+                                                         ->  Bitmap Heap Scan on products products_1  (cost=30.38..583.87 rows=124 width=337) (actual time=0.271..7.323 rows=139 loops=1)
+                                                               Recheck Cond: ('''travel'' & ''comput'''::tsquery @@ to_tsvector('english'::regconfig, description))
+                                                               Heap Blocks: exact=138
+                                                               ->  Bitmap Index Scan on products_description_gin_idx  (cost=0.00..30.35 rows=124 width=0) (actual time=0.186..0.186 rows=139 loops=1)
+                                                                     Index Cond: (to_tsvector('english'::regconfig, description) @@ '''travel'' & ''comput'''::tsquery)
+ Planning Time: 0.193 ms
+ Execution Time: 8.553 ms
  ```
 
 So yes, PostgreSQL used the indexes in both subqueries. I left the execution time in the output, though it doesn't really mean much given this dataset is so small.
