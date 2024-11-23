@@ -10,7 +10,15 @@ Below are a collection of talks and presentations I have given though the years.
 
 ## 2024
 
+- The Register (November 2024): [Best practices for querying vector data for generative AI apps](https://whitepapers.theregister.com/paper/view/32735/best-practices-for-querying-vector-data-for-generative-ai-apps)
+- PGConf.EU 2024 (October 2024): [Dissimilarity search: implementing in-memory vector search algorithms to PostgreSQL](https://www.postgresql.eu/events/pgconfeu2024/schedule/session/5830-dissimilarity-search-implementing-in-memory-vector-search-algorithms-to-postgresql/) ([slides](https://www.postgresql.eu/events/pgconfeu2024/sessions/session/5830/slides/609/pgconfeu-2024-vectors-internal.pdf)) ([video](https://www.youtube.com/watch?v=XeJIo8Mo66g&ab_channel=PostgreSQLEurope))
+- PGConf.NYC 2024 (September 2024): [Best practices for using pgvector](https://postgresql.us/events/pgconfnyc2024/schedule/session/1862-best-practices-for-using-pgvector/) ([slides](https://postgresql.us/events/pgconfnyc2024/sessions/session/1862/slides/172/pgvector_best_practices_pgconfnyc2024.pdf))
+- PGDay.UK 2024 (September 2024): [Vectors: Building support for a nasty data type
+](https://pgday.uk/events/pgdayuk2024/schedule/session/158-vectors-building-support-for-a-nasty-data-type/)
+- AWS Summit NYC 2024 (July 2024): [Build generative AI–powered search with Amazon Aurora and Amazon RDS](https://aws.amazon.com/events/summits/new-york/agenda/?amer-summit-cards.sort-by=item.additionalFields.startDate&amer-summit-cards.sort-order=asc&awsf.amer-summit-session=*all&awsf.amer-summit-level=*all&awsf.amer-summit-areaofinterest=*all&awsf.amer-summit-industry=*all&awsf.amer-summit-roles=*all&awsf.amer-summit-topic=*all&amer-summit-cards.q=katz&amer-summit-cards.q_operator=AND)
+- AWS Summit Washington DC 2024 (June 2024): [Best practices for querying vector data for gen AI apps in PostgreSQL](https://aws.amazon.com/events/summits/washington-dc/agenda/?amer-summit-cards.sort-by=item.additionalFields.startDateTime&amer-summit-cards.sort-order=asc&awsf.amer-summit-session=*all&awsf.amer-summit-level=*all&awsf.amer-summit-areaofinterest=*all&awsf.amer-summit-industry=*all&awsf.amer-summit-roles=*all&awsf.amer-summit-topic=*all&amer-summit-cards.q=katz&amer-summit-cards.q_operator=AND)
 - PGConf.dev 2024 (May 2024): [Vectors: How to better support a nasty data type in PostgreSQL](https://www.pgevents.ca/events/pgconfdev2024/schedule/session/1-vectors-how-to-better-support-a-nasty-data-type-in-postgresql/)
+- PGDay Chicago 2024 (April 2024): [A year in review of vectors on PostgreSQL](/slides/2024_vectors_year_in_review.pdf)
 - SCaLE 21x (March 2024): [Vectors are the new JSON](https://www.socallinuxexpo.org/scale/21x/presentations/vectors-are-new-json) ([slides](https://www.slideshare.net/slideshows/vectors-are-the-new-json-in-postgresql-scale-21x/266847947))
 - AWS OnAir (March 2024) [How Amazon Aurora Optimized Reads improves performance of gen AI apps](https://www.youtube.com/watch?v=M3bJ-beMHoo&ab_channel=AWSEvents) ([video](https://www.youtube.com/watch?v=M3bJ-beMHoo&ab_channel=AWSEvents))
 
