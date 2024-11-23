@@ -633,7 +633,7 @@
 &lt;/tbody>
 &lt;/table>
 &lt;p>And there it is: between pgvector 0.5.0 (where HNSW was introduced) and pgvector 0.7.0, we see that we can get a 150x speedup in the index build time when we use the &amp;ldquo;&lt;a href="https://jkatz.github.io/post/postgres/pgvector-scalar-binary-quantization/">binary quantization&lt;/a>&amp;rdquo; methods. Note that &lt;a href="https://jkatz.github.io/post/postgres/pgvector-scalar-binary-quantization/">we can&amp;rsquo;t always use binary quantization&lt;/a> with our data, but we can see we can that scalar quantization to 2-byte floats show over a 50x speedup from the initial HNSW implementation in pgvector 0.5.0. A lot of this speedup is attributed to the use of parallel workers (in this case, 64) during the index build process. For fun, here&amp;rsquo;s how this looks in a bar chart:&lt;/p>
-&lt;p>&lt;img src="https://jkatz.github.io/images/pgvector-150x-r7gd-dbpedia.png" alt="pgvector-150x-r7gd-dbpedia.png">&lt;/p>
+&lt;p>&lt;img alt="pgvector-150x-r7gd-dbpedia.png" src="https://jkatz.github.io/images/pgvector-150x-r7gd-dbpedia.png">&lt;/p>
 &lt;p>(Note: I do chuckle a bit, as it reminds of a time I fixed a query I wrote to get a 100x speedup. It was a recursive query, but I used &lt;code>UNION ALL&lt;/code> when instead I wanted &lt;code>UNION&lt;/code>. Unlike my goofy mistake, this I do take this work in pgvector to be a bona fide speedup due to all of the improvements in the pgvector implementation).&lt;/p>
 &lt;p>Additionally, we see that the addition of HNSW allows us to get a 30x QPS boost and an almost 30x p99 latency boost over IVFFlat at 99% recall. Queries were executed serially; we&amp;rsquo;d need to run additional tests to see how pgvector scales with client concurrently querying the data.&lt;/p>
 &lt;h3 id="dbpedia-openai-1000k-angular--99-recall-on-a-r7i16xlarge">&lt;code>dbpedia-openai-1000k-angular&lt;/code> @ 99% recall on a r7i.16xlarge&lt;/h3>
@@ -777,9 +777,9 @@
 &lt;/tbody>
 &lt;/table>
 &lt;p>Again, we see a 100x+ speedup in index build time when using the &amp;ldquo;&lt;a href="https://jkatz.github.io/post/postgres/pgvector-scalar-binary-quantization/">binary quantization&lt;/a>&amp;rdquo; methods, and comparable performance results overall to what we had with the r7gd family. We can also see a more than 30x improvement in both throughput and latency as well. Here is a chart that shows how the index build times have decreased on the r7i:&lt;/p>
-&lt;p>&lt;img src="https://jkatz.github.io/images/pgvector-150x-r7gd-dbpedia.png" alt="pgvector-150x-r7i-dbpedia.png">&lt;/p>
+&lt;p>&lt;img alt="pgvector-150x-r7i-dbpedia.png" src="https://jkatz.github.io/images/pgvector-150x-r7gd-dbpedia.png">&lt;/p>
 &lt;p>(I&amp;rsquo;ll note here I really need to level up my matplotlib skills; likely Excel too, as it was taking me awhile to get the data charted there. Anyway, this is all the charting I&amp;rsquo;m doing in this blog post).&lt;/p>
-&lt;p>As explored in the previous blog post on &lt;a href="post/postgres/pgvector-scalar-binary-quantization/">scalar and binary quantization&lt;/a>, we can&amp;rsquo;t always use binary quantization and achieve our recall target due to lack of bit diversity in the indexed vectors. We saw this with both the &lt;code>sift-128-euclidean&lt;/code> and &lt;code>gist-960-euclidean&lt;/code> datasets. However, both still have nice speedups over the course of the year.&lt;/p>
+&lt;p>As explored in the previous blog post on &lt;a href="https://jkatz.github.io/post/postgres/pgvector-scalar-binary-quantization/">scalar and binary quantization&lt;/a>, we can&amp;rsquo;t always use binary quantization and achieve our recall target due to lack of bit diversity in the indexed vectors. We saw this with both the &lt;code>sift-128-euclidean&lt;/code> and &lt;code>gist-960-euclidean&lt;/code> datasets. However, both still have nice speedups over the course of the year.&lt;/p>
 &lt;p>Below are the results from the &lt;code>sift-128-euclidean&lt;/code> benchmark @ 99% recall on both architectures:&lt;/p>
 &lt;h3 id="sift-128-euclidean--99-recall-on-a-r7gd16xlarge">&lt;code>sift-128-euclidean&lt;/code> @ 99% recall on a r7gd.16xlarge&lt;/h3>
 &lt;table>
@@ -1713,7 +1713,7 @@
 &lt;p>However, much like the &lt;a href="https://jkatz05.com/post/postgres/postgresql-2024/">&lt;em>almost&lt;/em> 40-year-old database PostgreSQL&lt;/a>, there are still ways pgvector can continue to grow. I&amp;rsquo;m going to talk more in depth about some &lt;a href="https://www.pgevents.ca/events/pgconfdev2024/schedule/session/1-vectors-how-to-better-support-a-nasty-data-type-in-postgresql/">longer term goals to better support vector workloads with pgvector and PostgreSQL&lt;/a> at &lt;a href="https://2024.pgconf.dev/">PGConf.dev 2024&lt;/a>, but I&amp;rsquo;ll give a brief preview here.&lt;/p>
 &lt;p>Over the past year, pgvector has made significant gains across the board in index build times, index sizes, throughput, and latency, particularly on vector queries over an entire vector data set. Simplifying &lt;a href="https://github.com/pgvector/pgvector/?tab=readme-ov-file#filtering">filtering&lt;/a> (aka the &lt;code>WHERE&lt;/code> clause) - pgvector and PostgreSQL already support this, but there are some areas we can make it easier and more efficient. Additionally, there are other search patterns that are gaining popularity, such as &amp;ldquo;hybrid search&amp;rdquo; like using simultaneously vector similarity search and fulltext search to return results. Again, this is something already supported by PostgreSQL natively, but there are areas we can simplify this process with pgvector. We&amp;rsquo;re seeing more work in pgvector to support hardware acceleration; this combined with further optimizations on And finally, there are some areas of PostgresQL we can prove to better support &lt;a href="https://jkatz.github.io/post/postgres/distributed-pgvector/">distributed pgvector workloads&lt;/a>, but I&amp;rsquo;ll still emphasize that most workloads that involve PostgreSQL and pgvector will scale vertically (which means showing more concurrency testing!).&lt;/p>
 &lt;p>We&amp;rsquo;ll also have to see how vector search workloads evolve, as that will also dictate what new features we&amp;rsquo;ll see in pgvector. Please keep giving feedback on what you&amp;rsquo;re building with pgvector and how your experience is - as that is how we can continue to make the project better!&lt;/p></description></item><item><title>Scalar and binary quantization for pgvector vector search and storage</title><link>https://jkatz.github.io/post/postgres/pgvector-scalar-binary-quantization/</link><pubDate>Tue, 09 Apr 2024 00:00:00 +0000</pubDate><guid>https://jkatz.github.io/post/postgres/pgvector-scalar-binary-quantization/</guid><description>&lt;p>While many AI/ML embedding models generate vectors that provide large amounts of information by using high dimensionality, this can come at the cost of using more memory for searches and more overall storage. Both of these can have an impact on the cost and performance of a system that&amp;rsquo;s storing vectors, including when using &lt;a href="https://www.postgresql.org/">PostgreSQL&lt;/a> with the &lt;a href="https://github.com/pgvector/pgvector/">pgvector&lt;/a> for these use cases.&lt;/p>
-&lt;p>When I &lt;a href="https://jkatz05.com/talks/">talk&lt;/a> about &lt;a href="https://www.youtube.com/watch?v=PhIC4JlYg7A&amp;amp;ab_channel=AWSEvents">vector search in PostgreSQL&lt;/a>, I have a slide that I like to call &amp;ldquo;no shortcuts without tradeoffs&amp;rdquo; that calls out the different challenges around searching vectors in a database. I first like to highlight that a 1,536 dimensional vector with 4-byte floating point (&lt;code>fp32&lt;/code>) dimensions requires 6KiB of storage. That may not seem like a lot, but storing 1,000,000 of these vectors in a PostgreSQL database requires 5.7GB of storage without any indexing. And again, that may not seem like a lot, but a single database row is closer to 600B of data (and typically even less than that) than 6KB.&lt;/p>
+&lt;p>When I &lt;a href="https://jkatz05.com/talks/">talk&lt;/a> about &lt;a href="https://www.youtube.com/watch?v=PhIC4JlYg7A&amp;ab_channel=AWSEvents">vector search in PostgreSQL&lt;/a>, I have a slide that I like to call &amp;ldquo;no shortcuts without tradeoffs&amp;rdquo; that calls out the different challenges around searching vectors in a database. I first like to highlight that a 1,536 dimensional vector with 4-byte floating point (&lt;code>fp32&lt;/code>) dimensions requires 6KiB of storage. That may not seem like a lot, but storing 1,000,000 of these vectors in a PostgreSQL database requires 5.7GB of storage without any indexing. And again, that may not seem like a lot, but a single database row is closer to 600B of data (and typically even less than that) than 6KB.&lt;/p>
 &lt;p>The next point I talk about is compression: unfortunately, you just can&amp;rsquo;t compress a bunch of seemingly random floating point numbers. However, there are techniques to reduce the amount of information that you can store, from &lt;a href="https://en.wikipedia.org/wiki/Principal_component_analysis">principal component analysis&lt;/a> (aka &lt;a href="https://en.wikipedia.org/wiki/Principal_component_analysis">PCA&lt;/a>), which can reduce the overall dimensionality, to quantization techniques that can reduce the size or overall number of dimensions of a vector. These can reduce your overall storage and memory requirements &amp;ndash; and perhaps even improve performance in certain areas, but recall that I mentioned there are no shortcuts without tradeoffs. To use quantization for vector searches, we&amp;rsquo;ll have to give something up, whether it&amp;rsquo;s in the overall relevancy of our searches (&lt;a href="https://en.wikipedia.org/wiki/Precision_and_recall">recall&lt;/a>) or in some area of performance in our system.&lt;/p>
 &lt;p>There are three common quantization techniques around vector databases:&lt;/p>
 &lt;ul>
@@ -2936,7 +2936,7 @@ The PostgreSQL Global Development Group remains committed to making PostgreSQL a
 &lt;/ul>
 &lt;p>Recall is measured from 0 to 1 (0% to 100% relevant results returned). Queries per second (QPS) is measured in how many queries complete per second :)&lt;/p>
 &lt;h4 id="sift-128-euclidean">sift-128-euclidean&lt;/h4>
-&lt;p>&lt;img src="https://jkatz.github.io/images/pgvector-distributed-sift128-recall.png" alt="pgvector-distributed-sift128-recall.png">&lt;/p>
+&lt;p>&lt;img alt="pgvector-distributed-sift128-recall.png" src="https://jkatz.github.io/images/pgvector-distributed-sift128-recall.png">&lt;/p>
 &lt;table>
 &lt;thead>
 &lt;tr>
@@ -2988,7 +2988,7 @@ The PostgreSQL Global Development Group remains committed to making PostgreSQL a
 &lt;/tr>
 &lt;/tbody>
 &lt;/table>
-&lt;p>&lt;img src="https://jkatz.github.io/images/pgvector-distributed-sift128-qps.png" alt="pgvector-distributed-sift128-qps.png">&lt;/p>
+&lt;p>&lt;img alt="pgvector-distributed-sift128-qps.png" src="https://jkatz.github.io/images/pgvector-distributed-sift128-qps.png">&lt;/p>
 &lt;table>
 &lt;thead>
 &lt;tr>
@@ -3041,7 +3041,7 @@ The PostgreSQL Global Development Group remains committed to making PostgreSQL a
 &lt;/tbody>
 &lt;/table>
 &lt;h4 id="dbpedia-openai-1000k-angular">dbpedia-openai-1000k-angular&lt;/h4>
-&lt;p>&lt;img src="https://jkatz.github.io/images/pgvector-distributed-dbpedia1000k-recall.png" alt="pgvector-distributed-dbpedia1000k-recall.png">&lt;/p>
+&lt;p>&lt;img alt="pgvector-distributed-dbpedia1000k-recall.png" src="https://jkatz.github.io/images/pgvector-distributed-dbpedia1000k-recall.png">&lt;/p>
 &lt;table>
 &lt;thead>
 &lt;tr>
@@ -3093,7 +3093,7 @@ The PostgreSQL Global Development Group remains committed to making PostgreSQL a
 &lt;/tr>
 &lt;/tbody>
 &lt;/table>
-&lt;p>&lt;img src="https://jkatz.github.io/images/pgvector-distributed-dbpedia1000k-qps.png" alt="pgvector-distributed-dbpedia1000k-qps.png">&lt;/p>
+&lt;p>&lt;img alt="pgvector-distributed-dbpedia1000k-qps.png" src="https://jkatz.github.io/images/pgvector-distributed-dbpedia1000k-qps.png">&lt;/p>
 &lt;table>
 &lt;thead>
 &lt;tr>
@@ -3146,7 +3146,7 @@ The PostgreSQL Global Development Group remains committed to making PostgreSQL a
 &lt;/tbody>
 &lt;/table>
 &lt;h4 id="gist-960-euclidean">gist-960-euclidean&lt;/h4>
-&lt;p>&lt;img src="https://jkatz.github.io/images/pgvector-distributed-gist960-recall.png" alt="pgvector-distributed-gist960-recall.png">&lt;/p>
+&lt;p>&lt;img alt="pgvector-distributed-gist960-recall.png" src="https://jkatz.github.io/images/pgvector-distributed-gist960-recall.png">&lt;/p>
 &lt;table>
 &lt;thead>
 &lt;tr>
@@ -3198,7 +3198,7 @@ The PostgreSQL Global Development Group remains committed to making PostgreSQL a
 &lt;/tr>
 &lt;/tbody>
 &lt;/table>
-&lt;p>&lt;img src="https://jkatz.github.io/images/pgvector-distributed-gist960-qps.png" alt="pgvector-distributed-gist960-qps.png">&lt;/p>
+&lt;p>&lt;img alt="pgvector-distributed-gist960-qps.png" src="https://jkatz.github.io/images/pgvector-distributed-gist960-qps.png">&lt;/p>
 &lt;table>
 &lt;thead>
 &lt;tr>
@@ -3504,9 +3504,9 @@ The PostgreSQL Global Development Group remains committed to making PostgreSQL a
 &lt;p>While these are thoughts for what PostgreSQL can do in 2024 and beyond, there&amp;rsquo;s so much PostgreSQL already does today. In fact, asking questions like &amp;ldquo;where is PostgreSQL going&amp;rdquo; does give us an opportunity to step back and reflect on all the progress PostgreSQL has made over the past several years while looking ahead on what is to come!&lt;/p></description></item><item><title>pgvector 0.5.0 Feature Highlights and HOWTOs</title><link>https://jkatz.github.io/post/postgres/pgvector-overview-0.5.0/</link><pubDate>Mon, 28 Aug 2023 00:00:00 +0000</pubDate><guid>https://jkatz.github.io/post/postgres/pgvector-overview-0.5.0/</guid><description>&lt;p>It&amp;rsquo;s here! &lt;a href="https://github.com/pgvector/pgvector/releases/tag/v0.5.0">pgvector 0.5.0&lt;/a> is released and has some incredible new features. &lt;a href="https://github.com/pgvector/pgvector">pgvector&lt;/a> is an open-source project that brings &lt;a href="https://jkatz.github.io/post/postgres/vectors-json-postgresql/">vector database capabilities to PostgreSQL&lt;/a>. The pgvector community is moving very rapidly on adding new features, so I thought it prudent to put together some highlights of the 0.5.0 release.&lt;/p>
 &lt;p>Here&amp;rsquo;s a quick list of highlights, though I encourage you read the rest in depth and explore on your own!&lt;/p>
 &lt;ul>
-&lt;li>&lt;a href="#new-index-type-hierarchical-navigable-small-worlds-hnsw">HNSW indexing support&lt;/a>&lt;/li>
-&lt;li>&lt;a href="#improved-performance-of-distance-functions">Faster distance calculations&lt;/a>&lt;/li>
-&lt;li>&lt;a href="#parallelization-of-ivfflat-index-builds">Parallel builds for &lt;code>ivfflat&lt;/code>&lt;/a>&lt;/li>
+&lt;li>&lt;a href="https://jkatz.github.io/post/postgres/pgvector-overview-0.5.0/#new-index-type-hierarchical-navigable-small-worlds-hnsw">HNSW indexing support&lt;/a>&lt;/li>
+&lt;li>&lt;a href="https://jkatz.github.io/post/postgres/pgvector-overview-0.5.0/#improved-performance-of-distance-functions">Faster distance calculations&lt;/a>&lt;/li>
+&lt;li>&lt;a href="https://jkatz.github.io/post/postgres/pgvector-overview-0.5.0/#parallelization-of-ivfflat-index-builds">Parallel builds for &lt;code>ivfflat&lt;/code>&lt;/a>&lt;/li>
 &lt;/ul>
 &lt;p>This is a big release, so let&amp;rsquo;s dive right in.&lt;/p>
 &lt;h2 id="new-index-type-hierarchical-navigable-small-worlds-hnsw">New index type: Hierarchical Navigable Small Worlds (&lt;code>hnsw&lt;/code>)&lt;/h2>
@@ -3518,7 +3518,7 @@ The PostgreSQL Global Development Group remains committed to making PostgreSQL a
 &lt;li>&lt;strong>Concurrent inserts&lt;/strong>: Additionally, pgvector&amp;rsquo;s HNSW implementations lets you concurrently insert values into the index, making it easier to simultaneously load data from multiple sources.&lt;/li>
 &lt;/ul>
 &lt;p>In a previous post, I went into depth on the &lt;a href="https://jkatz.github.io/post/postgres/pgvector-hnsw-performance/">HNSW performance for pgvector&lt;/a> with benchmarks that compared it to &lt;code>ivfflat&lt;/code> and &lt;code>pg_embedding&lt;/code>&amp;rsquo;s HNSW implementation. The chart below shows the performance/recall tradeoffs on OpenAI-style embedding data using cosine distance (for &lt;a href="https://jkatz.github.io/post/postgres/pgvector-hnsw-performance/">full testing methodology&lt;/a> and the &lt;a href="https://github.com/erikbern/ann-benchmarks">ANN Benchmark framework&lt;/a>. Please read the &lt;a href="https://jkatz.github.io/post/postgres/pgvector-hnsw-performance/">previous post&lt;/a>) for more details on the test methodology and other considerations (index build time, index size on disk):&lt;/p>
-&lt;p>&lt;img src="https://jkatz.github.io/images/dbpedia-openai-1000k-angular.png" alt="dbpedia-openai-1000k-angular.png">&lt;/p>
+&lt;p>&lt;img alt="dbpedia-openai-1000k-angular.png" src="https://jkatz.github.io/images/dbpedia-openai-1000k-angular.png">&lt;/p>
 &lt;p>Instead of focusing on benchmarking in this post, I want to provide guidance on how to use the key parameters in &lt;code>hnsw&lt;/code> so you understand the ramifications on your performance/recall ratio and index build times.&lt;/p>
 &lt;p>In the &lt;a href="https://jkatz.github.io/post/postgres/pgvector-hnsw-performance/">previous post&lt;/a>, we reviewed the 3 parameters that are part of the HNSW algorithm. We&amp;rsquo;ll break them down to where they are applicable in pgvector&amp;rsquo;s &lt;code>hnsw&lt;/code> implementation:&lt;/p>
 &lt;h3 id="index-building-options">Index building options&lt;/h3>
@@ -3958,7 +3958,7 @@ The PostgreSQL Global Development Group remains committed to making PostgreSQL a
 &lt;/tr>
 &lt;/tbody>
 &lt;/table>
-&lt;p>&lt;img src="https://jkatz.github.io/images/mnist-784-euclidean.png" alt="mnist-784-euclidean.png">&lt;/p>
+&lt;p>&lt;img alt="mnist-784-euclidean.png" src="https://jkatz.github.io/images/mnist-784-euclidean.png">&lt;/p>
 &lt;p>Analysis:&lt;/p>
 &lt;ul>
 &lt;li>This is the case-in-point why you must measure both performance and recall. From a pure performance standpoint, pgvector&amp;rsquo;s &lt;code>ivfflat&lt;/code> index does have higher QPS (though not by much compared to pgvector&amp;rsquo;s &lt;code>hnsw&lt;/code>), but at a great expense with recall.&lt;/li>
@@ -4056,7 +4056,7 @@ The PostgreSQL Global Development Group remains committed to making PostgreSQL a
 &lt;/tr>
 &lt;/tbody>
 &lt;/table>
-&lt;p>&lt;img src="https://jkatz.github.io/images/sift-128-euclidean.png" alt="sift-128-euclidean.png">&lt;/p>
+&lt;p>&lt;img alt="sift-128-euclidean.png" src="https://jkatz.github.io/images/sift-128-euclidean.png">&lt;/p>
 &lt;p>Analysis:&lt;/p>
 &lt;ul>
 &lt;li>Again, it&amp;rsquo;s crucial to look at both performance and recall. &lt;code>ivfflat&lt;/code> has high throughput, but on this test, it underperforms both &lt;code>hnsw&lt;/code> implementations when looking at the same relative recall.&lt;/li>
@@ -4121,7 +4121,7 @@ The PostgreSQL Global Development Group remains committed to making PostgreSQL a
 &lt;/tr>
 &lt;/tbody>
 &lt;/table>
-&lt;p>&lt;img src="https://jkatz.github.io/images/gist-960-euclidean.png" alt="gist-960-euclidean.png">&lt;/p>
+&lt;p>&lt;img alt="gist-960-euclidean.png" src="https://jkatz.github.io/images/gist-960-euclidean.png">&lt;/p>
 &lt;p>Analysis:&lt;/p>
 &lt;ul>
 &lt;li>From both a performance/recall standpoint, pgvector&amp;rsquo;s HNSW implementation outperforms pg_embedding on this data set, though the gap closes for higher values of &lt;code>ef_search&lt;/code>.&lt;/li>
@@ -4204,7 +4204,7 @@ The PostgreSQL Global Development Group remains committed to making PostgreSQL a
 &lt;/tr>
 &lt;/tbody>
 &lt;/table>
-&lt;p>&lt;img src="https://jkatz.github.io/images/dbpedia-openai-1000k-angular.png" alt="dbpedia-openai-1000k-angular.png">&lt;/p>
+&lt;p>&lt;img alt="dbpedia-openai-1000k-angular.png" src="https://jkatz.github.io/images/dbpedia-openai-1000k-angular.png">&lt;/p>
 &lt;p>Analysis:&lt;/p>
 &lt;ul>
 &lt;li>pgvector&amp;rsquo;s HNSW implementation has better performance/recall ratio than the other algorithms by a fairly wide margin.&lt;/li>
