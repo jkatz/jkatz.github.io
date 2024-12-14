@@ -10,6 +10,8 @@ Below are a collection of talks and presentations I have given though the years.
 
 ## 2024
 
+- re:Invent 2024 (December 2024): [A practitioner’s guide to data for generative AI](https://www.youtube.com/watch?v=o1F2yJu2nDw&ab_channel=AWSEvents)
+- re:Invent 2024 (December 2024): [Best practices for querying vector data for gen AI apps in PostgreSQL](https://www.youtube.com/watch?v=L8fQqVwTT3Y&ab_channel=AWSEvents) ([project](https://github.com/pgvector/pgvector/))
 - The Register (November 2024): [Best practices for querying vector data for generative AI apps](https://whitepapers.theregister.com/paper/view/32735/best-practices-for-querying-vector-data-for-generative-ai-apps)
 - PGConf.EU 2024 (October 2024): [Dissimilarity search: implementing in-memory vector search algorithms to PostgreSQL](https://www.postgresql.eu/events/pgconfeu2024/schedule/session/5830-dissimilarity-search-implementing-in-memory-vector-search-algorithms-to-postgresql/) ([slides](https://www.postgresql.eu/events/pgconfeu2024/sessions/session/5830/slides/609/pgconfeu-2024-vectors-internal.pdf)) ([video](https://www.youtube.com/watch?v=XeJIo8Mo66g&ab_channel=PostgreSQLEurope))
 - PGConf.NYC 2024 (September 2024): [Best practices for using pgvector](https://postgresql.us/events/pgconfnyc2024/schedule/session/1862-best-practices-for-using-pgvector/) ([slides](https://postgresql.us/events/pgconfnyc2024/sessions/session/1862/slides/172/pgvector_best_practices_pgconfnyc2024.pdf))
