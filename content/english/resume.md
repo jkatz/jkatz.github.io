@@ -53,6 +53,8 @@ When I first started using, let alone contributing, to open source, I never thou
 
 - [PostgreSQL](https://www.postgresql.org)
   - Mainly governance, but I have some big contributions to the website and a couple in the core database software.
+- [pgvector](https://github.com/pgvector/pgvector)
+  - All-around contributions (engineering, product, benchmarking, advocacy). My personal favorite was the [HNSW cost-estimation algorithm](https://github.com/pgvector/pgvector/pull/682) which inolved a fair bit of research and experimentation!
 - [Crunchy Postgres Operator](https://github.com/CrunchyData/postgres-operator)
   - Mostly on v4; Was mainly focused on product aspects of v5.
 - [`pg_tle`](https://github.com/aws/pg_tle/) (aka "Trusted Language Extensions for PostgreSQL")
