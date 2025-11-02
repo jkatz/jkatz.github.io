@@ -8,7 +8,10 @@ author = "Jonathan Katz"
 
 # Work
 
-- [Amazon](https://www.amazon.com) (2022 - )
+- [Databricks](https://www.databricks.com/) (2025 -)
+  - Sr. Staff Product Manager - [Lakebase](https://www.databricks.com/product/lakebase)
+- [Amazon](https://www.amazon.com) (2022 - 2025)
+  - Principal Product Manager Technical (PMT) - [AWS Analytics](https://aws.amazon.com/big-data/datalakes-and-analytics/)
   - Principal Product Manager Technical (PMT) - [Amazon RDS](https://aws.amazon.com/rds/)
 - [Crunchy Data](https://www.crunchydata.com) (2018 - 2022)
   - VP, Platform Engineering

@@ -1,12 +1,20 @@
 +++
 title = "Talks"
 description = "Jonathan Katz Talks / Presentations"
-date = "2023-06-23"
+date = "2025-11-01"
 aliases = []
 author = "Jonathan Katz"
 +++
 
 Below are a collection of talks and presentations I have given though the years. This is not an exhaustive list; if you know of a presentation that you'd like to see added, please reach out to me!
+
+## 2025
+
+- NYC PostgreSQL User Group (September 2025): [A PostgreSQL 18 Whirlwind Tour](https://www.meetup.com/postgres-nyc/events/310731063/?eventOrigin=group_past_events) ([slides](https://www.slideshare.net/slideshow/postgresql-18-a-whirlwind-tour-of-features/283259854))
+- A decade of innovation with Amazon Aurora (August 2025): [Aurora memory wall: a decade in vectors](https://pages.awscloud.com/Aurora_10year_Anniversary_Registration.html) ([video](https://www.youtube.com/watch?v=IMAp3XRtR30#t=2h3m30s))
+- NYC PostgreSQL User Group (July 2025): [Vectors: Best Practices for a Nasty Data Type](https://www.meetup.com/postgres-nyc/events/308236599/)
+- PGConf.dev 2025 (May 2025): [Vector search is now boring, but PostgreSQL has ways to go](https://www.pgevents.ca/events/pgconfdev2025/schedule/session/446-vector-search-is-now-boring-but-postgresql-has-ways-to-go/) ([video](https://www.youtube.com/watch?v=muIiVwCfeRM))
+- Seattle Postgres User Group (April 2025): [Vectors: Best Practices for a Nasty Data Type](https://www.meetup.com/seattle-postgres/events/306579613/) ([video](https://www.youtube.com/watch?v=hF556tnKz2M))
 
 ## 2024
 
