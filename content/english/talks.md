@@ -10,7 +10,7 @@ Below are a collection of talks and presentations I have given though the years.
 
 ## 2026
 
-- Postgres Summit US 2026 (September 2026): [A PostgreSQL 19 Whirlwind Tour](https://postgresql.us/events/postgressummitus2026/schedule/session/2443-a-postgresql-19-whirlwind-tour/) ([slides](/slidespostgres-19-whirlwind-tour.pdf))
+- Postgres Summit US 2026 (September 2026): [A PostgreSQL 19 Whirlwind Tour](https://postgresql.us/events/postgressummitus2026/schedule/session/2443-a-postgresql-19-whirlwind-tour/) ([slides](/slides/postgres-19-whirlwind-tour.pdf))
 - Data + AI World Tour - Singapore (September 2026): Lakebase & LTAP: The best database architecture for building AI apps and agents
 - Data + AI Summit (June 2026): [Enterprise Resiliency Strategies with Lakebase](https://www.databricks.com/dataaisummit/session/enterprise-resiliency-strategies-lakebase)
 - Data + AI Summit (June 2026): [Real-time Analytics on Live Postgres Data](https://www.databricks.com/dataaisummit/session/real-time-analytics-live-postgres-data)
