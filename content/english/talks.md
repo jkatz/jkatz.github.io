@@ -8,6 +8,14 @@ author = "Jonathan Katz"
 
 Below are a collection of talks and presentations I have given though the years. This is not an exhaustive list; if you know of a presentation that you'd like to see added, please reach out to me!
 
+## 2026
+
+- Postgres Summit US 2026 (September 2026): [A PostgreSQL 19 Whirlwind Tour](https://postgresql.us/events/postgressummitus2026/schedule/session/2443-a-postgresql-19-whirlwind-tour/) ([slides](/slidespostgres-19-whirlwind-tour.pdf))
+- Data + AI World Tour - Singapore (September 2026): Lakebase & LTAP: The best database architecture for building AI apps and agents
+- Data + AI Summit (June 2026): [Enterprise Resiliency Strategies with Lakebase](https://www.databricks.com/dataaisummit/session/enterprise-resiliency-strategies-lakebase)
+- Data + AI Summit (June 2026): [Real-time Analytics on Live Postgres Data](https://www.databricks.com/dataaisummit/session/real-time-analytics-live-postgres-data)
+- PGConf.dev 2026 (May 2026): [PostgreSQL as an open data format: 100x faster TPC-H queries through direct storage reads](https://2026.pgconf.dev/session/573)
+
 ## 2025
 
 - NYC PostgreSQL User Group (September 2025): [A PostgreSQL 18 Whirlwind Tour](https://www.meetup.com/postgres-nyc/events/310731063/?eventOrigin=group_past_events) ([slides](https://www.slideshare.net/slideshow/postgresql-18-a-whirlwind-tour-of-features/283259854))
